@@ -1,6 +1,6 @@
 # Cropvolare
 
-Cheap NDVI crop monitoring using a Raspberry Pi and a NoIR camera. Point it at your field, get a vegetation health map. That's it for now.
+Affordable NDVI crop monitoring using a Raspberry Pi and a NoIR camera.
 
 ## What's NDVI?
 
