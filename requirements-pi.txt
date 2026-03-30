@@ -1,0 +1,4 @@
+# Raspberry Pi specific dependencies
+# Install picamera2 via apt: sudo apt install python3-picamera2
+numpy>=1.24
+opencv-python-headless>=4.8

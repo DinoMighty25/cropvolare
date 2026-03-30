@@ -1,0 +1,15 @@
+{
+  "camera": {
+    "resolution": [4608, 2592],
+    "format": "RGB888"
+  },
+  "ndvi": {
+    "stress_threshold": 0.3,
+    "block_size": 64
+  },
+  "calibration": {
+    "ref_roi": [0, 0, 50, 50],
+    "known_nir_reflectance": 0.5,
+    "known_red_reflectance": 0.5
+  }
+}
