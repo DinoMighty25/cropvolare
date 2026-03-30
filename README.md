@@ -1,151 +1,105 @@
 # Cropvolare
 
-**Affordable NDVI crop health monitoring for smallholder farmers.**
+NDVI crop health monitoring on a Raspberry Pi. Uses an Arducam NoIR V3 camera with a Wratten 25A red filter to get vegetation health maps from a single camera — no expensive multispectral sensors needed.
 
-Cropvolare uses a Raspberry Pi Zero 2W and an Arducam NoIR V3 camera with a Wratten 25A red filter to compute NDVI (Normalized Difference Vegetation Index) from a single camera. It provides per-pixel vegetation health maps and zone-level stress classification — all on-device, no cloud required.
+## How it works
 
----
+The NoIR camera has no IR-cut filter, so it picks up near-infrared light. Slap a Wratten 25A (red longpass) filter on it and the Bayer channels split nicely:
 
-## How It Works
+- **Blue channel** → mostly NIR (700-1000nm), since visible blue is blocked by the filter
+- **Red channel** → visible red (580-700nm)
 
-The NoIR camera (no infrared filter) paired with a Wratten 25A longpass filter separates light into two useful bands:
-
-| Bayer Channel | What It Captures               |
-|---------------|--------------------------------|
-| Blue          | Near-infrared (NIR), 700-1000nm |
-| Red           | Visible red, 580-700nm          |
-
-NDVI is then computed per-pixel:
-
-```
-NDVI = (NIR - Red) / (NIR + Red)
-```
-
-Healthy vegetation reflects strongly in NIR and absorbs red light, producing high NDVI values (0.5 - 1.0). Stressed or bare areas produce low values (< 0.3).
-
----
+Then NDVI is just `(NIR - Red) / (NIR + Red)`. Healthy plants reflect a ton of NIR and absorb red, so they score high (~0.5-1.0). Stressed or bare ground scores low (<0.3).
 
 ## Hardware
 
-| Component | Model | Purpose |
-|-----------|-------|---------|
-| Computer | Raspberry Pi Zero 2W | On-device NDVI computation |
-| Camera | Arducam NoIR V3 (IMX708) | NIR-sensitive image capture |
-| Filter | Wratten 25A red gel | Channel separation for NDVI |
-| Storage | 32GB MicroSD | OS + data |
-
----
-
-## Project Structure
-
-```
-cropvolare/
-├── cropvolare/
-│   ├── __init__.py
-│   └── ndvi.py              # NDVI capture, compute, calibrate, visualize
-├── scripts/
-│   └── capture_ndvi.py      # CLI script to capture and compute NDVI
-├── tests/
-│   └── test_ndvi.py         # Unit tests (no hardware needed)
-├── config/
-│   └── default.json         # Default configuration
-├── docs/                    # Documentation (coming soon)
-├── requirements.txt         # Python dependencies
-├── requirements-pi.txt      # Raspberry Pi dependencies
-├── LICENSE
-└── README.md
-```
-
----
+- Raspberry Pi Zero 2W
+- Arducam NoIR V3 (IMX708, no IR filter)
+- Wratten 25A red gel filter
+- 32GB MicroSD
 
 ## Setup
 
-### On Raspberry Pi
-
+**Raspberry Pi:**
 ```bash
-# Install system dependencies
-sudo apt update
-sudo apt install python3-picamera2 python3-opencv python3-numpy
-
-# Clone the repo
+sudo apt update && sudo apt install python3-picamera2 python3-opencv python3-numpy
 git clone https://github.com/DinoMighty25/cropvolare.git
 cd cropvolare
 ```
 
-### On Desktop (for development/testing)
-
+**Desktop (dev/testing only, no camera capture):**
 ```bash
 git clone https://github.com/DinoMighty25/cropvolare.git
 cd cropvolare
 pip install -r requirements.txt
 ```
 
----
-
 ## Usage
 
-### Capture and compute NDVI (on Raspberry Pi)
-
+Capture + compute on the Pi:
 ```bash
 python scripts/capture_ndvi.py
-python scripts/capture_ndvi.py --output my_field.png --print-zones
+python scripts/capture_ndvi.py -o my_field.png --print-zones
 ```
 
-### Use as a library
-
+Or use it in your own code:
 ```python
-from cropvolare.ndvi import (
-    create_camera,
-    capture_image,
-    compute_ndvi_from_image,
-    classify_zones,
-    save_ndvi_image,
-)
+from cropvolare.ndvi import create_camera, capture_image, compute_ndvi_from_image, classify_zones
 
 cam = create_camera()
 image = capture_image(cam)
 ndvi = compute_ndvi_from_image(image)
 
-zones = classify_zones(ndvi, block_size=64)
-stressed = [z for z in zones if z["status"] == "stressed"]
-print(f"Stressed zones: {len(stressed)}")
-
-save_ndvi_image(ndvi, "output/ndvi_map.png")
+zones = classify_zones(ndvi)
+for z in zones:
+    if z["status"] == "stressed":
+        print(f"zone ({z['zone_row']},{z['zone_col']}): {z['mean_ndvi']:.2f}")
 ```
 
-### Run tests
+## NDVI values
+
+| Range | Meaning |
+|-------|---------|
+| 0.6 – 1.0 | Dense healthy vegetation |
+| 0.3 – 0.6 | Moderate / early stress |
+| 0.1 – 0.3 | Sparse / significant stress |
+| -0.1 – 0.1 | Bare soil |
+| < -0.1 | Water |
+
+## Project structure
+
+```
+cropvolare/
+├── cropvolare/        # main package
+│   ├── __init__.py
+│   └── ndvi.py        # capture, ndvi math, calibration, visualization
+├── scripts/
+│   └── capture_ndvi.py
+├── tests/
+│   └── test_ndvi.py
+├── config/
+│   └── default.json
+├── docs/
+├── requirements.txt
+└── requirements-pi.txt
+```
+
+## Tests
 
 ```bash
 pytest tests/
 ```
 
----
-
-## NDVI Value Reference
-
-| NDVI Range | Interpretation |
-|------------|----------------|
-| 0.6 - 1.0 | Dense, healthy vegetation |
-| 0.3 - 0.6 | Moderate vegetation / early stress |
-| 0.1 - 0.3 | Sparse vegetation / significant stress |
-| -0.1 - 0.1 | Bare soil |
-| -1.0 - -0.1 | Water / non-vegetation |
-
----
-
 ## Roadmap
 
-- [x] NDVI computation pipeline
-- [x] Hardware reference-target calibration
-- [x] Zone-level stress classification
-- [ ] Edge-AI disease detection (MobileNetV2)
+- [x] NDVI capture + computation
+- [x] Reference target calibration
+- [x] Zone health classification
+- [ ] Disease detection (TFLite on-device)
 - [ ] LoRa connectivity
-- [ ] SMS/WhatsApp farmer alerts
+- [ ] Farmer alerts (SMS/WhatsApp)
 - [ ] Solar power management
-- [ ] Field deployment tools
-
----
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT

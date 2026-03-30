@@ -1,13 +1,9 @@
 """
-NDVI computation module for Raspberry Pi + Arducam NoIR V3 camera.
+NDVI pipeline for Raspberry Pi + Arducam NoIR V3 w/ Wratten 25A filter.
 
-Uses a single NoIR camera with a Wratten 25A red longpass filter to capture
-dual-band imagery. The filter blocks visible blue light, so:
-  - Blue Bayer channel  -> primarily NIR (700-1000nm)
-  - Red Bayer channel   -> visible red (580-700nm) + some NIR
-
-NDVI is computed per-pixel as: (NIR - Red) / (NIR + Red)
-where NIR = blue channel, Red = red channel.
+Single-camera NDVI: the Wratten 25A blocks blue visible light, so the
+blue Bayer channel picks up mostly NIR (700-1000nm) and the red channel
+gets visible red (580-700nm). Then it's just (NIR - Red) / (NIR + Red).
 """
 
 import numpy as np
@@ -23,23 +19,11 @@ except ImportError:
     Picamera2 = None
 
 
-# ---------------------------------------------------------------------------
-# Capture
-# ---------------------------------------------------------------------------
-
-def create_camera(resolution: tuple[int, int] = (4608, 2592)) -> "Picamera2":
-    """Initialize the Arducam NoIR V3 camera via Picamera2.
-
-    Args:
-        resolution: Capture resolution as (width, height).
-
-    Returns:
-        Configured Picamera2 instance (not yet started).
-    """
+def create_camera(resolution=(4608, 2592)):
+    """Set up the NoIR camera. Returns a configured (but not started) Picamera2."""
     if Picamera2 is None:
         raise RuntimeError(
-            "picamera2 is not installed. "
-            "Install it on your Raspberry Pi with: sudo apt install python3-picamera2"
+            "picamera2 not installed — run: sudo apt install python3-picamera2"
         )
 
     cam = Picamera2()
@@ -50,19 +34,12 @@ def create_camera(resolution: tuple[int, int] = (4608, 2592)) -> "Picamera2":
     return cam
 
 
-def capture_image(cam: "Picamera2") -> np.ndarray:
-    """Capture a single frame from the NoIR camera.
-
-    Args:
-        cam: A configured Picamera2 instance.
-
-    Returns:
-        BGR image as a numpy array (H, W, 3).
-    """
+def capture_image(cam):
+    """Grab a single frame, returns BGR numpy array."""
     cam.start()
     frame = cam.capture_array()
     cam.stop()
-    # picamera2 returns RGB; convert to BGR for OpenCV consistency
+    # picamera2 gives us RGB, flip to BGR for opencv
     if cv2 is not None:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     else:
@@ -70,185 +47,88 @@ def capture_image(cam: "Picamera2") -> np.ndarray:
     return frame
 
 
-# ---------------------------------------------------------------------------
-# NDVI computation
-# ---------------------------------------------------------------------------
-
-def extract_channels(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Extract NIR and Red channels from a NoIR + Wratten 25A filtered image.
-
-    With the Wratten 25A filter mounted:
-      - Blue channel (index 0 in BGR) captures mostly NIR
-      - Red channel (index 2 in BGR) captures visible red + NIR leakage
-
-    Args:
-        image: BGR image as uint8 numpy array (H, W, 3).
-
-    Returns:
-        Tuple of (nir, red) as float64 arrays in [0, 1].
-    """
-    nir = image[:, :, 0].astype(np.float64) / 255.0  # blue channel = NIR
-    red = image[:, :, 2].astype(np.float64) / 255.0  # red channel = visible red
+def extract_channels(image):
+    """Pull out NIR (blue ch) and red (red ch) as float arrays in [0,1]."""
+    nir = image[:, :, 0].astype(np.float64) / 255.0
+    red = image[:, :, 2].astype(np.float64) / 255.0
     return nir, red
 
 
-def compute_ndvi(nir: np.ndarray, red: np.ndarray) -> np.ndarray:
-    """Compute per-pixel NDVI from NIR and Red channel arrays.
-
-    NDVI = (NIR - Red) / (NIR + Red)
-
-    Args:
-        nir: NIR channel as float64 array, values in [0, 1].
-        red: Red channel as float64 array, values in [0, 1].
-
-    Returns:
-        NDVI array with values in [-1, 1]. Pixels where both channels
-        are zero are set to 0.
-    """
-    denominator = nir + red
-    ndvi = np.where(denominator > 0, (nir - red) / denominator, 0.0)
-    return ndvi
+def compute_ndvi(nir, red):
+    """Per-pixel NDVI. Returns array in [-1, 1], zero where both channels are 0."""
+    denom = nir + red
+    return np.where(denom > 0, (nir - red) / denom, 0.0)
 
 
-def compute_ndvi_from_image(image: np.ndarray) -> np.ndarray:
-    """Convenience function: extract channels and compute NDVI in one call.
-
-    Args:
-        image: BGR image as uint8 numpy array (H, W, 3).
-
-    Returns:
-        NDVI array with values in [-1, 1].
-    """
+def compute_ndvi_from_image(image):
+    """Extract channels + compute NDVI in one shot."""
     nir, red = extract_channels(image)
     return compute_ndvi(nir, red)
 
 
-# ---------------------------------------------------------------------------
-# Calibration
-# ---------------------------------------------------------------------------
+def calibrate_with_reference(image, ref_roi, known_nir=0.5, known_red=0.5):
+    """Normalize channels using a grey reference target in the frame.
 
-def calibrate_with_reference(
-    image: np.ndarray,
-    ref_roi: tuple[int, int, int, int],
-    known_nir_reflectance: float = 0.5,
-    known_red_reflectance: float = 0.5,
-) -> np.ndarray:
-    """Apply hardware reference-target calibration to an image.
-
-    A small grey reference target with known reflectance is mounted at a
-    fixed position in the camera's field of view. This function normalizes
-    channel values so that the reference target pixels match the expected
-    reflectance ratio, compensating for changes in sunlight intensity and
-    color temperature.
-
-    Args:
-        image: BGR image as uint8 numpy array (H, W, 3).
-        ref_roi: Region of interest for the reference target as
-                 (x, y, width, height) in pixels.
-        known_nir_reflectance: Expected NIR reflectance of the target (0-1).
-        known_red_reflectance: Expected red reflectance of the target (0-1).
-
-    Returns:
-        Calibrated BGR image as uint8 numpy array.
+    ref_roi is (x, y, w, h) for the target location. We measure the
+    average channel values there and scale the whole image so the target
+    matches the known reflectance values. This handles varying sunlight.
     """
     x, y, w, h = ref_roi
-    roi = image[y : y + h, x : x + w]
+    roi = image[y:y+h, x:x+w]
 
-    measured_nir = roi[:, :, 0].mean() / 255.0  # blue channel
-    measured_red = roi[:, :, 2].mean() / 255.0  # red channel
+    measured_nir = roi[:, :, 0].mean() / 255.0
+    measured_red = roi[:, :, 2].mean() / 255.0
 
-    # Avoid division by zero
-    nir_scale = known_nir_reflectance / measured_nir if measured_nir > 0.01 else 1.0
-    red_scale = known_red_reflectance / measured_red if measured_red > 0.01 else 1.0
+    nir_scale = known_nir / measured_nir if measured_nir > 0.01 else 1.0
+    red_scale = known_red / measured_red if measured_red > 0.01 else 1.0
 
-    calibrated = image.astype(np.float64)
-    calibrated[:, :, 0] *= nir_scale  # scale blue/NIR channel
-    calibrated[:, :, 2] *= red_scale  # scale red channel
+    cal = image.astype(np.float64)
+    cal[:, :, 0] *= nir_scale
+    cal[:, :, 2] *= red_scale
 
-    return np.clip(calibrated, 0, 255).astype(np.uint8)
+    return np.clip(cal, 0, 255).astype(np.uint8)
 
 
-# ---------------------------------------------------------------------------
-# Analysis & visualization
-# ---------------------------------------------------------------------------
-
-def classify_zones(
-    ndvi: np.ndarray,
-    block_size: int = 64,
-) -> list[dict]:
-    """Segment NDVI map into grid zones and classify health status.
-
-    Args:
-        ndvi: NDVI array with values in [-1, 1].
-        block_size: Size of each square zone in pixels.
-
-    Returns:
-        List of dicts with keys: zone_row, zone_col, mean_ndvi, status.
-        Status is one of: "healthy", "moderate", "stressed".
-    """
+def classify_zones(ndvi, block_size=64):
+    """Break NDVI map into a grid and tag each block as healthy/moderate/stressed."""
     h, w = ndvi.shape
     zones = []
 
-    for row_idx, y in enumerate(range(0, h, block_size)):
-        for col_idx, x in enumerate(range(0, w, block_size)):
-            block = ndvi[y : y + block_size, x : x + block_size]
+    for ri, y in enumerate(range(0, h, block_size)):
+        for ci, x in enumerate(range(0, w, block_size)):
+            block = ndvi[y:y+block_size, x:x+block_size]
             if block.size == 0:
                 continue
 
-            mean_val = float(np.mean(block))
-
-            if mean_val >= 0.5:
+            mean = float(np.mean(block))
+            if mean >= 0.5:
                 status = "healthy"
-            elif mean_val >= 0.3:
+            elif mean >= 0.3:
                 status = "moderate"
             else:
                 status = "stressed"
 
             zones.append({
-                "zone_row": row_idx,
-                "zone_col": col_idx,
-                "mean_ndvi": round(mean_val, 4),
+                "zone_row": ri,
+                "zone_col": ci,
+                "mean_ndvi": round(mean, 4),
                 "status": status,
             })
 
     return zones
 
 
-def colorize_ndvi(ndvi: np.ndarray) -> np.ndarray:
-    """Convert an NDVI array to a colorized heatmap image.
-
-    Maps NDVI values to a color gradient:
-      -1 (bare/water) -> blue
-       0 (bare soil)  -> yellow
-      +1 (dense veg)  -> dark green
-
-    Args:
-        ndvi: NDVI array with values in [-1, 1].
-
-    Returns:
-        BGR color image as uint8 numpy array (H, W, 3).
-    """
+def colorize_ndvi(ndvi):
+    """Turn NDVI array into a JET colormap image (BGR). Needs OpenCV."""
     if cv2 is None:
-        raise RuntimeError("OpenCV is required for colorize_ndvi")
+        raise RuntimeError("opencv required for colorize_ndvi")
 
-    # Normalize from [-1, 1] to [0, 255]
     normalized = ((ndvi + 1) / 2 * 255).astype(np.uint8)
-
-    # Apply colormap (COLORMAP_JET: blue -> green -> red, we invert so
-    # high NDVI = green, low NDVI = red/blue)
-    colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
-    return colored
+    return cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
 
 
-def save_ndvi_image(ndvi: np.ndarray, path: str) -> None:
-    """Save a colorized NDVI heatmap to disk.
-
-    Args:
-        ndvi: NDVI array with values in [-1, 1].
-        path: Output file path (e.g., "output/ndvi_map.png").
-    """
+def save_ndvi_image(ndvi, path):
+    """Save colorized NDVI heatmap to a file."""
     if cv2 is None:
-        raise RuntimeError("OpenCV is required for save_ndvi_image")
-
-    colored = colorize_ndvi(ndvi)
-    cv2.imwrite(path, colored)
+        raise RuntimeError("opencv required for save_ndvi_image")
+    cv2.imwrite(path, colorize_ndvi(ndvi))
