@@ -19,7 +19,7 @@ except ImportError:
     Picamera2 = None
 
 
-def create_camera(resolution=(4608, 2592)):
+def create_camera(resolution=(2304, 1296)):
     """Set up the NoIR camera. Returns a configured (but not started) Picamera2."""
     if Picamera2 is None:
         raise RuntimeError(
@@ -34,9 +34,11 @@ def create_camera(resolution=(4608, 2592)):
     return cam
 
 
-def capture_image(cam):
+def capture_image(cam, warmup=2):
     """Grab a single frame, returns BGR numpy array."""
+    import time
     cam.start()
+    time.sleep(warmup)  # let auto-exposure settle
     frame = cam.capture_array()
     cam.stop()
     # picamera2 gives us RGB, flip to BGR for opencv
