@@ -29,15 +29,18 @@ def main():
     print("initializing camera...")
     cam = create_camera()
 
-    print("capturing...")
+    print("capturing (waiting for auto-exposure)...")
     image = capture_image(cam)
+    print(f"got image: {image.shape}, {image.dtype}")
 
     print("computing ndvi...")
     ndvi = compute_ndvi_from_image(image)
+    print(f"ndvi range: {ndvi.min():.4f} to {ndvi.max():.4f}")
 
     mean_ndvi = float(ndvi.mean())
     print(f"mean NDVI: {mean_ndvi:.4f}")
 
+    print("classifying zones...")
     zones = classify_zones(ndvi, block_size=args.block_size)
     stressed = [z for z in zones if z["status"] == "stressed"]
     print(f"{len(zones)} zones, {len(stressed)} stressed")
