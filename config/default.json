@@ -1,9 +1,12 @@
 {
   "camera": {
-    "resolution": [4608, 2592],
-    "format": "RGB888"
+    "resolution": [2304, 1296],
+    "format": "RGB888",
+    "colour_gains": [0.88, 0.97]
   },
   "ndvi": {
+    "gamma": 0.8,
+    "leakage_k": 0.6,
     "stress_threshold": 0.3,
     "block_size": 64
   },
@@ -11,5 +14,13 @@
     "ref_roi": [0, 0, 50, 50],
     "known_nir_reflectance": 0.5,
     "known_red_reflectance": 0.5
+  },
+  "field": {
+    "cell_meters": 20.0,
+    "healthy_threshold": 0.5,
+    "stressed_threshold": 0.3,
+    "top_n_problems": 5,
+    "overlay_opacity": 0.6,
+    "write_per_image_overlays": false
   }
 }

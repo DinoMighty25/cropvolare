@@ -1,9 +1,17 @@
 """
-NDVI pipeline for Raspberry Pi + Arducam NoIR V3 w/ Wratten 25A filter.
+NDVI pipeline for Raspberry Pi + Arducam NoIR V3 w/ red NDVI filter.
 
-Single-camera NDVI: the Wratten 25A blocks blue visible light, so the
-blue Bayer channel picks up mostly NIR (700-1000nm) and the red channel
-gets visible red (580-700nm). Then it's just (NIR - Red) / (NIR + Red).
+Single-camera NDVI: the filter blocks blue visible light, so the blue Bayer
+channel picks up mostly NIR (700-1000nm) and the red channel gets visible red
+(580-700nm). Then it's just (NIR - Red) / (NIR + Red), after two corrections:
+
+  1. gamma linearization  - the sensor stores values gamma-encoded; NDVI needs
+                            linear reflectance, so we undo it before the math.
+  2. red-leakage subtract - some NIR bleeds into the red channel through the
+                            filter. We subtract a fraction (k) of NIR from red.
+
+Everything below the camera helpers is pure numpy and runs anywhere, so you can
+develop and test the whole pipeline on saved images without a Pi.
 """
 
 import numpy as np
@@ -19,11 +27,21 @@ except ImportError:
     Picamera2 = None
 
 
-def create_camera(resolution=(2304, 1296)):
-    """Set up the NoIR camera. Returns a configured (but not started) Picamera2."""
+# --------------------------------------------------------------------------
+# Camera (Pi only)
+# --------------------------------------------------------------------------
+
+def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
+                  exposure_us=None):
+    """Set up the NoIR camera with LOCKED controls.
+
+    Auto white-balance and auto-exposure are disabled on purpose: leaving them
+    on makes NDVI values incomparable between frames. Focus is fixed at infinity.
+    Returns a configured (but not started) Picamera2.
+    """
     if Picamera2 is None:
         raise RuntimeError(
-            "picamera2 not installed — run: sudo apt install python3-picamera2"
+            "picamera2 not installed - run: sudo apt install python3-picamera2"
         )
 
     cam = Picamera2()
@@ -31,6 +49,18 @@ def create_camera(resolution=(2304, 1296)):
         main={"size": resolution, "format": "RGB888"},
     )
     cam.configure(config)
+
+    controls = {
+        "AfMode": 0,                 # manual focus
+        "LensPosition": 0.0,         # focus at infinity
+        "AwbEnable": False,          # locked white balance
+        "ColourGains": colour_gains,
+        "AeEnable": False,           # locked exposure
+    }
+    if exposure_us is not None:
+        controls["ExposureTime"] = int(exposure_us)
+    cam.set_controls(controls)
+
     return cam
 
 
@@ -38,7 +68,7 @@ def capture_image(cam, warmup=2):
     """Grab a single frame, returns BGR numpy array."""
     import time
     cam.start()
-    time.sleep(warmup)  # let auto-exposure settle
+    time.sleep(warmup)  # let the sensor settle even with controls locked
     frame = cam.capture_array()
     cam.stop()
     # picamera2 gives us RGB, flip to BGR for opencv
@@ -49,6 +79,23 @@ def capture_image(cam, warmup=2):
     return frame
 
 
+def load_image(path):
+    """Read an image file from disk as a BGR numpy array.
+
+    Lets you run the whole pipeline on saved photos without a camera.
+    """
+    if cv2 is None:
+        raise RuntimeError("opencv required for load_image")
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise FileNotFoundError(f"could not read image: {path}")
+    return img
+
+
+# --------------------------------------------------------------------------
+# NDVI math (pure numpy, hardware-free)
+# --------------------------------------------------------------------------
+
 def extract_channels(image):
     """Pull out NIR (blue ch) and red (red ch) as float arrays in [0,1]."""
     nir = image[:, :, 0].astype(np.float64) / 255.0
@@ -56,40 +103,81 @@ def extract_channels(image):
     return nir, red
 
 
+def remove_gamma(channel, gamma=0.8):
+    """Linearize a [0,1] channel by undoing gamma encoding: c ** (1/gamma)."""
+    if not gamma or gamma == 1.0:
+        return channel
+    return np.power(np.clip(channel, 0.0, 1.0), 1.0 / gamma)
+
+
+def correct_leakage(nir, red, k=0.6):
+    """Subtract NIR bleed from the red channel: red = clip(red - k*nir, 0, 1)."""
+    if not k:
+        return red
+    return np.clip(red - k * nir, 0.0, 1.0)
+
+
 def compute_ndvi(nir, red):
     """Per-pixel NDVI. Returns array in [-1, 1], zero where both channels are 0."""
     denom = nir + red
-    return np.where(denom > 0, (nir - red) / denom, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(denom > 0, (nir - red) / denom, 0.0)
 
 
-def compute_ndvi_from_image(image):
-    """Extract channels + compute NDVI in one shot."""
+def compute_ndvi_from_image(image, gamma=0.8, leakage_k=0.6):
+    """Full single-image NDVI: extract -> linearize -> de-leak -> NDVI.
+
+    Pass gamma=1.0 and leakage_k=0.0 to get the raw uncorrected index.
+    """
     nir, red = extract_channels(image)
+    nir = remove_gamma(nir, gamma)
+    red = remove_gamma(red, gamma)
+    red = correct_leakage(nir, red, leakage_k)
     return compute_ndvi(nir, red)
 
 
-def calibrate_with_reference(image, ref_roi, known_nir=0.5, known_red=0.5):
-    """Normalize channels using a grey reference target in the frame.
+def compute_vari(image):
+    """VARI = (G - R) / (G + R - B). Filter-free vegetation index cross-check.
 
-    ref_roi is (x, y, w, h) for the target location. We measure the
-    average channel values there and scale the whole image so the target
-    matches the known reflectance values. This handles varying sunlight.
+    Use this on an UNFILTERED RGB photo - with the NDVI filter on, the blue
+    channel is NIR, so VARI would be meaningless.
     """
-    x, y, w, h = ref_roi
-    roi = image[y:y+h, x:x+w]
+    blue = image[:, :, 0].astype(np.float64)
+    green = image[:, :, 1].astype(np.float64)
+    red = image[:, :, 2].astype(np.float64)
+    denom = green + red - blue
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(np.abs(denom) > 1e-6, (green - red) / denom, 0.0)
 
-    measured_nir = roi[:, :, 0].mean() / 255.0
-    measured_red = roi[:, :, 2].mean() / 255.0
 
-    nir_scale = known_nir / measured_nir if measured_nir > 0.01 else 1.0
-    red_scale = known_red / measured_red if measured_red > 0.01 else 1.0
+# --------------------------------------------------------------------------
+# Flat-field calibration
+# --------------------------------------------------------------------------
 
-    cal = image.astype(np.float64)
-    cal[:, :, 0] *= nir_scale
-    cal[:, :, 2] *= red_scale
+def build_flatfield(frames):
+    """Build a per-pixel gain map from frames of a uniform white panel.
 
-    return np.clip(cal, 0, 255).astype(np.uint8)
+    Averages the frames, then computes the gain that flattens each pixel to the
+    global mean - this corrects lens vignetting and sensor non-uniformity.
+    Save the result with np.save(...) and reuse it across a capture session.
+    """
+    if len(frames) == 0:
+        raise ValueError("need at least one frame to build a flat-field map")
+    stack = np.stack([f.astype(np.float64) for f in frames], axis=0)
+    avg = stack.mean(axis=0)
+    target = avg.mean()
+    return np.where(avg > 1e-6, target / avg, 1.0)
 
+
+def apply_flatfield(image, gain):
+    """Apply a gain map (from build_flatfield) to an image, returns uint8."""
+    corrected = image.astype(np.float64) * gain
+    return np.clip(corrected, 0, 255).astype(np.uint8)
+
+
+# --------------------------------------------------------------------------
+# Zones + visualization
+# --------------------------------------------------------------------------
 
 def classify_zones(ndvi, block_size=64):
     """Break NDVI map into a grid and tag each block as healthy/moderate/stressed."""
@@ -120,17 +208,52 @@ def classify_zones(ndvi, block_size=64):
     return zones
 
 
-def colorize_ndvi(ndvi):
-    """Turn NDVI array into a JET colormap image (BGR). Needs OpenCV."""
-    if cv2 is None:
-        raise RuntimeError("opencv required for colorize_ndvi")
+# NDVI colormap: red (stressed) -> yellow -> green (healthy). Built as a
+# (pos, R, G, B) gradient over NDVI in [-1, 1]; this RdYlGn ramp is far more
+# readable for a farmer report than OpenCV's JET.
+_NDVI_COLOR_POINTS = [
+    (-1.0, 165,   0,  38),
+    (-0.5, 215,  48,  39),
+    ( 0.0, 255, 255, 191),
+    ( 0.5, 145, 207,  96),
+    ( 1.0,  26, 152,  80),
+]
 
-    normalized = ((ndvi + 1) / 2 * 255).astype(np.uint8)
-    return cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+
+def _build_ndvi_lut():
+    positions = np.array([p[0] for p in _NDVI_COLOR_POINTS])
+    rgb = np.array([p[1:] for p in _NDVI_COLOR_POINTS], dtype=np.float64)
+    # map LUT index 0..255 back to NDVI -1..1
+    ndvi_axis = np.linspace(-1.0, 1.0, 256)
+    lut = np.empty((256, 3), dtype=np.float64)
+    for c in range(3):
+        lut[:, c] = np.interp(ndvi_axis, positions, rgb[:, c])
+    return lut[:, ::-1].astype(np.uint8)  # RGB -> BGR for opencv
+
+
+_NDVI_LUT = _build_ndvi_lut()
+
+
+def colorize_ndvi(ndvi):
+    """Turn NDVI array into a BGR heatmap using the NDVI colormap (numpy only)."""
+    idx = np.clip((ndvi + 1.0) / 2.0 * 255.0, 0, 255).astype(np.uint8)
+    return _NDVI_LUT[idx]
 
 
 def save_ndvi_image(ndvi, path):
-    """Save colorized NDVI heatmap to a file."""
+    """Save colorized NDVI heatmap as a PNG."""
     if cv2 is None:
         raise RuntimeError("opencv required for save_ndvi_image")
     cv2.imwrite(path, colorize_ndvi(ndvi))
+
+
+def save_ndvi_tiff(ndvi, path):
+    """Save NDVI as a 16-bit TIFF, preserving the full value range.
+
+    NDVI in [-1, 1] is mapped to uint16 [0, 65535]. To recover the float:
+        ndvi = arr.astype(float) / 65535.0 * 2.0 - 1.0
+    """
+    if cv2 is None:
+        raise RuntimeError("opencv required for save_ndvi_tiff")
+    arr = np.clip((ndvi + 1.0) / 2.0 * 65535.0, 0, 65535).astype(np.uint16)
+    cv2.imwrite(path, arr)

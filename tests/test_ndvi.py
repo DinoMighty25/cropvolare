@@ -1,5 +1,16 @@
 import numpy as np
-from cropvolare.ndvi import compute_ndvi, compute_ndvi_from_image, extract_channels, classify_zones
+from cropvolare.ndvi import (
+    apply_flatfield,
+    build_flatfield,
+    classify_zones,
+    colorize_ndvi,
+    compute_ndvi,
+    compute_ndvi_from_image,
+    compute_vari,
+    correct_leakage,
+    extract_channels,
+    remove_gamma,
+)
 
 
 def test_extract_channels_shape():
@@ -38,14 +49,102 @@ def test_both_zero_no_crash():
     np.testing.assert_allclose(compute_ndvi(z, z), 0.0)
 
 
-def test_from_image():
+def test_from_image_raw():
+    # gamma off, leakage off -> plain (NIR - Red) / (NIR + Red)
     img = np.zeros((64, 64, 3), dtype=np.uint8)
     img[:, :, 0] = 200  # NIR (blue channel)
     img[:, :, 2] = 100  # red channel
-    ndvi = compute_ndvi_from_image(img)
+    ndvi = compute_ndvi_from_image(img, gamma=1.0, leakage_k=0.0)
     expected = (200 - 100) / (200 + 100)
     np.testing.assert_allclose(ndvi, expected, atol=1e-6)
 
+
+# --- gamma -----------------------------------------------------------------
+
+def test_remove_gamma_identity_at_endpoints():
+    ch = np.array([0.0, 1.0])
+    np.testing.assert_allclose(remove_gamma(ch, gamma=0.8), [0.0, 1.0])
+
+
+def test_remove_gamma_disabled():
+    ch = np.array([0.3, 0.7])
+    np.testing.assert_allclose(remove_gamma(ch, gamma=1.0), ch)
+
+
+def test_remove_gamma_changes_midtones():
+    ch = np.array([0.5])
+    out = remove_gamma(ch, gamma=0.8)
+    assert not np.isclose(out[0], 0.5)
+    assert 0.0 <= out[0] <= 1.0
+
+
+# --- leakage ---------------------------------------------------------------
+
+def test_correct_leakage_subtracts_nir():
+    nir = np.full((4, 4), 0.5)
+    red = np.full((4, 4), 0.5)
+    out = correct_leakage(nir, red, k=0.6)
+    np.testing.assert_allclose(out, 0.2)
+
+
+def test_correct_leakage_clips_to_zero():
+    nir = np.ones((4, 4))
+    red = np.full((4, 4), 0.1)
+    out = correct_leakage(nir, red, k=0.6)
+    np.testing.assert_allclose(out, 0.0)
+
+
+def test_correct_leakage_disabled():
+    nir = np.full((4, 4), 0.5)
+    red = np.full((4, 4), 0.3)
+    np.testing.assert_allclose(correct_leakage(nir, red, k=0.0), red)
+
+
+def test_leakage_raises_ndvi_over_raw():
+    # subtracting NIR from red increases (NIR - Red), so NDVI goes up
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img[:, :, 0] = 180  # NIR
+    img[:, :, 2] = 120  # red
+    raw = compute_ndvi_from_image(img, gamma=1.0, leakage_k=0.0).mean()
+    corrected = compute_ndvi_from_image(img, gamma=1.0, leakage_k=0.6).mean()
+    assert corrected > raw
+
+
+# --- VARI ------------------------------------------------------------------
+
+def test_vari_formula():
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img[:, :, 0] = 50   # blue
+    img[:, :, 1] = 150  # green
+    img[:, :, 2] = 100  # red
+    expected = (150 - 100) / (150 + 100 - 50)
+    np.testing.assert_allclose(compute_vari(img), expected, atol=1e-6)
+
+
+def test_vari_no_crash_on_zero_denom():
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    np.testing.assert_allclose(compute_vari(img), 0.0)
+
+
+# --- flat-field ------------------------------------------------------------
+
+def test_flatfield_flattens_vignette():
+    # a darker corner should be brightened back toward the mean
+    frame = np.full((10, 10, 3), 200, dtype=np.uint8)
+    frame[0, 0] = 100
+    gain = build_flatfield([frame, frame])
+    corrected = apply_flatfield(frame, gain)
+    # corrected corner should be closer to the bulk value than the raw corner
+    assert corrected[0, 0, 0] > frame[0, 0, 0]
+
+
+def test_flatfield_uniform_is_noop():
+    frame = np.full((6, 6, 3), 180, dtype=np.uint8)
+    gain = build_flatfield([frame])
+    np.testing.assert_allclose(gain, 1.0)
+
+
+# --- zones + colormap ------------------------------------------------------
 
 def test_zones_healthy():
     ndvi = np.full((64, 64), 0.7)
@@ -64,3 +163,10 @@ def test_zones_grid_count():
     ndvi = np.full((128, 128), 0.5)
     zones = classify_zones(ndvi, block_size=64)
     assert len(zones) == 4
+
+
+def test_colorize_shape_and_type():
+    ndvi = np.linspace(-1, 1, 64).reshape(8, 8)
+    out = colorize_ndvi(ndvi)
+    assert out.shape == (8, 8, 3)
+    assert out.dtype == np.uint8

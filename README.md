@@ -39,9 +39,12 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Single image (bench / handheld)
+
 ```bash
-python scripts/capture_ndvi.py
-python scripts/capture_ndvi.py -o my_field.png --print-zones
+python scripts/capture_ndvi.py                       # capture on the Pi
+python scripts/capture_ndvi.py --input photo.jpg     # process a saved photo
+python scripts/capture_ndvi.py -o my_field.png --print-zones --vari
 ```
 
 Or in Python:
@@ -57,16 +60,43 @@ for z in classify_zones(ndvi):
         print(f"zone ({z['zone_row']},{z['zone_col']}): {z['mean_ndvi']:.2f}")
 ```
 
+### Whole flight → farmer report
+
+Process a folder of geotagged drone photos into a field-level report:
+
+```bash
+python scripts/process_flight.py --input flights/2026-06-21/ --outdir output/2026-06-21/
+```
+
+This produces, in `--outdir`:
+
+| File | What it is |
+|------|------------|
+| `field.geojson` | Per-photo NDVI + GPS (durable data; also the stitching hand-off) |
+| `heatmap.png` | Colorized field NDVI overlay |
+| `report.pdf` | One-page farmer report: map, % healthy/stressed/severe, ranked problem areas |
+| `map.html` | Standalone interactive web map (opens in any browser, no server) |
+
+Photos need GPS in their EXIF. On the Pi, tag captured JPEGs with `scripts/tag_gps.py`
+(reads a serial GPS via pynmea2). Processing runs on a laptop after the flight.
+
 ## Project structure
 
 ```
 cropvolare/
-├── cropvolare/          # main package
-│   └── ndvi.py
+├── cropvolare/             # main package
+│   ├── ndvi.py             # NDVI math + camera (single image)
+│   ├── geo.py              # EXIF GPS read/write
+│   ├── batch.py            # folder of photos -> GeoJSON NDVI records
+│   ├── field.py            # bin photos into a field grid, rank problem areas
+│   ├── fieldmap.py         # field heatmap PNG
+│   ├── report.py           # one-page PDF report
+│   └── webmap.py           # standalone interactive web map
 ├── scripts/
-│   └── capture_ndvi.py  # cli tool
+│   ├── capture_ndvi.py     # single-image cli
+│   ├── process_flight.py   # whole-flight pipeline -> report
+│   └── tag_gps.py          # Pi-side GPS EXIF tagging
 ├── tests/
-│   └── test_ndvi.py
 ├── config/
 │   └── default.json
 └── docs/
