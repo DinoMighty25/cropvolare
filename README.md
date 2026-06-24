@@ -80,6 +80,39 @@ This produces, in `--outdir`:
 Photos need GPS in their EXIF. On the Pi, tag captured JPEGs with `scripts/tag_gps.py`
 (reads a serial GPS via pynmea2). Processing runs on a laptop after the flight.
 
+## Running on the Raspberry Pi
+
+Tested on a Pi Zero 2 W + Camera Module 3 (IMX708), Raspberry Pi OS Bookworm.
+
+Install dependencies (use apt for the heavy libs — building them with pip on a
+Zero 2 W is slow):
+
+```bash
+sudo apt update
+sudo apt install -y python3-picamera2 python3-opencv python3-numpy
+pip install --break-system-packages piexif pynmea2 pyserial
+```
+
+Confirm the camera is detected, then capture:
+
+```bash
+rpicam-hello --list-cameras        # should list imx708
+python scripts/capture_ndvi.py -o ndvi.png   # single shot + NDVI
+```
+
+Capture a flight (burst of geotagged JPEGs for `process_flight.py`):
+
+```bash
+# 40 frames, one every 2.5 s, tagging from a serial GPS
+python scripts/capture_flight.py --outdir flights/today --count 40 --gps-port /dev/serial0
+
+# no GPS connected? capture untagged, then tag afterwards
+python scripts/capture_flight.py --outdir flights/today --count 40
+python scripts/tag_gps.py --dir flights/today --lat 40.1 --lon -88.2
+```
+
+Then copy `flights/today/` to the laptop and run `process_flight.py` on it.
+
 ## Project structure
 
 ```
@@ -94,6 +127,7 @@ cropvolare/
 │   └── webmap.py           # standalone interactive web map
 ├── scripts/
 │   ├── capture_ndvi.py     # single-image cli
+│   ├── capture_flight.py   # Pi-side burst capture -> geotagged JPEGs
 │   ├── process_flight.py   # whole-flight pipeline -> report
 │   └── tag_gps.py          # Pi-side GPS EXIF tagging
 ├── tests/

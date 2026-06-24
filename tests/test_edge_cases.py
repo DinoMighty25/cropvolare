@@ -132,13 +132,13 @@ def test_load_config_reads_json(tmp_path):
 # --- deliverable content (beyond magic bytes) ------------------------------
 
 def test_pdf_contains_summary_text(flight_outputs, tmp_path):
+    pypdf = pytest.importorskip("pypdf")  # optional dev tool; skip if absent
     pdf_path = tmp_path / "content.pdf"
     report.build_report(
         flight_outputs["fc"], flight_outputs["grid"], flight_outputs["cells"],
         flight_outputs["problems"], flight_outputs["summary"],
         flight_outputs["heatmap_png"], str(pdf_path),
     )
-    import pypdf
     reader = pypdf.PdfReader(str(pdf_path))
     text = "".join(page.extract_text() for page in reader.pages)
     assert "Healthy" in text

@@ -9,10 +9,30 @@ from cropvolare.ndvi import (
     compute_ndvi_from_image,
     compute_vari,
     correct_leakage,
+    capture_frame,
     extract_channels,
     remove_gamma,
     save_ndvi_tiff,
 )
+
+
+class _FakeCam:
+    """Minimal stand-in for a started Picamera2: returns a fixed RGB array."""
+
+    def __init__(self, rgb):
+        self._rgb = rgb
+
+    def capture_array(self):
+        return self._rgb
+
+
+def test_capture_frame_converts_rgb_to_bgr():
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    rgb[:, :, 0] = 255  # pure red in RGB
+    bgr = capture_frame(_FakeCam(rgb))
+    # red should land in the BGR blue-index... i.e. channel 2 after conversion
+    assert bgr[0, 0, 2] == 255
+    assert bgr[0, 0, 0] == 0
 
 
 def test_extract_channels_shape():

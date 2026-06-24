@@ -64,18 +64,29 @@ def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
     return cam
 
 
+def _to_bgr(frame):
+    """picamera2 gives RGB; flip to BGR for opencv."""
+    if cv2 is not None:
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    return frame[:, :, ::-1].copy()
+
+
+def capture_frame(cam):
+    """Grab one frame from an ALREADY-STARTED camera. Returns BGR.
+
+    Use this in a capture loop (e.g. a flight) where the camera is started once
+    and kept running - avoids the start/warmup/stop cost on every shot.
+    """
+    return _to_bgr(cam.capture_array())
+
+
 def capture_image(cam, warmup=2):
-    """Grab a single frame, returns BGR numpy array."""
+    """Start the camera, grab a single frame, stop. Returns BGR numpy array."""
     import time
     cam.start()
     time.sleep(warmup)  # let the sensor settle even with controls locked
-    frame = cam.capture_array()
+    frame = capture_frame(cam)
     cam.stop()
-    # picamera2 gives us RGB, flip to BGR for opencv
-    if cv2 is not None:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    else:
-        frame = frame[:, :, ::-1].copy()
     return frame
 
 

@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Burst flight capture: save a sequence of (optionally geotagged) JPEGs.
+
+This is the producer for the processing pipeline. Run it during a flight; it
+captures a frame every few seconds, saves it as a JPEG, and - if a GPS is
+connected - stamps the current fix into the JPEG's EXIF. The resulting folder
+is exactly what scripts/process_flight.py consumes on the laptop.
+
+    # capture 40 frames, one every 2.5 s, into a flight folder
+    python scripts/capture_flight.py --outdir flights/today --count 40
+
+    # capture until Ctrl+C, tagging each frame from a serial GPS
+    python scripts/capture_flight.py --outdir flights/today --count 0 \
+        --gps-port /dev/serial0
+
+Without --gps-port, frames are saved untagged; tag them afterwards with
+scripts/tag_gps.py (e.g. against a recorded track), then run process_flight.py.
+"""
+
+import argparse
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from cropvolare import geo
+from cropvolare.ndvi import capture_frame, create_camera
+
+
+def _default_save(path, frame):
+    import cv2
+    cv2.imwrite(path, frame)
+
+
+def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
+                save_fn=None, tag_fn=None, sleep_fn=None, log_fn=print,
+                prefix="frame"):
+    """Capture loop core. Injected callables make it testable without hardware.
+
+    capture_fn() -> BGR frame; gps_fn() -> {'lat','lon','alt'} or None.
+    n_frames=None runs until interrupted by the caller. Returns saved paths.
+    """
+    save_fn = save_fn or _default_save
+    tag_fn = tag_fn or geo.write_gps
+    sleep_fn = sleep_fn or time.sleep
+    os.makedirs(outdir, exist_ok=True)
+
+    saved = []
+    i = 0
+    while n_frames is None or i < n_frames:
+        frame = capture_fn()
+        path = os.path.join(outdir, f"{prefix}_{i:04d}.jpg")
+        save_fn(path, frame)
+
+        tagged = False
+        if gps_fn is not None:
+            fix = gps_fn()
+            if fix:
+                tag_fn(path, fix["lat"], fix["lon"], fix.get("alt"))
+                tagged = True
+
+        saved.append(path)
+        log_fn(f"[{i + 1}{'/' + str(n_frames) if n_frames else ''}] "
+               f"{os.path.basename(path)}{' +gps' if tagged else ''}")
+        i += 1
+        if n_frames is None or i < n_frames:
+            sleep_fn(interval)
+
+    return saved
+
+
+class GpsReader:
+    """Background thread that keeps the latest GPS fix from a serial NMEA source.
+
+    Pi-only (needs pynmea2 + pyserial). Returns None until a fix arrives, so the
+    capture loop saves untagged frames rather than blocking.
+    """
+
+    def __init__(self, port="/dev/serial0", baud=9600):
+        self.port = port
+        self.baud = baud
+        self._latest = None
+        self._stop = False
+        self._thread = None
+
+    def start(self):
+        import threading
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        try:
+            import pynmea2
+            import serial
+        except ImportError:
+            print("GPS: pynmea2/pyserial not installed; frames stay untagged")
+            return
+        try:
+            ser = serial.Serial(self.port, self.baud, timeout=1.0)
+        except Exception as exc:  # noqa: BLE001 - report and bail, don't crash flight
+            print(f"GPS: could not open {self.port}: {exc}")
+            return
+        while not self._stop:
+            line = ser.readline().decode("ascii", errors="ignore").strip()
+            if not line.startswith("$"):
+                continue
+            try:
+                msg = pynmea2.parse(line)
+            except Exception:  # noqa: BLE001 - skip malformed sentences
+                continue
+            lat = getattr(msg, "latitude", None)
+            lon = getattr(msg, "longitude", None)
+            if lat and lon:
+                alt = getattr(msg, "altitude", None)
+                self._latest = {
+                    "lat": float(lat), "lon": float(lon),
+                    "alt": float(alt) if alt else None,
+                }
+        ser.close()
+
+    def latest(self):
+        return self._latest
+
+    def stop(self):
+        self._stop = True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Burst flight capture")
+    parser.add_argument("-o", "--outdir", required=True,
+                        help="folder to write JPEGs into")
+    parser.add_argument("--count", type=int, default=40,
+                        help="number of frames (0 = until Ctrl+C)")
+    parser.add_argument("--interval", type=float, default=2.5,
+                        help="seconds between frames")
+    parser.add_argument("--warmup", type=float, default=2.0,
+                        help="seconds to let the sensor settle before the first frame")
+    parser.add_argument("--gps-port", default=None,
+                        help="serial GPS port (e.g. /dev/serial0); omit to skip tagging")
+    args = parser.parse_args()
+
+    n_frames = None if args.count <= 0 else args.count
+
+    gps = None
+    if args.gps_port:
+        print(f"starting GPS reader on {args.gps_port} ...")
+        gps = GpsReader(port=args.gps_port).start()
+
+    print("initializing camera (controls locked) ...")
+    cam = create_camera()
+    cam.start()
+    time.sleep(args.warmup)
+    print(f"capturing {'until Ctrl+C' if n_frames is None else n_frames} "
+          f"frame(s), one every {args.interval}s -> {args.outdir}")
+
+    try:
+        saved = run_capture(
+            args.outdir,
+            capture_fn=lambda: capture_frame(cam),
+            n_frames=n_frames,
+            interval=args.interval,
+            gps_fn=(gps.latest if gps else None),
+        )
+        print(f"done: {len(saved)} frame(s) saved")
+    except KeyboardInterrupt:
+        print("\nstopped by user")
+    finally:
+        cam.stop()
+        if gps:
+            gps.stop()
+
+
+if __name__ == "__main__":
+    main()
