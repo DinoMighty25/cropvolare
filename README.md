@@ -104,9 +104,20 @@ cropvolare/
 
 ## Running tests
 
+Install the dev/test deps once, then run the suite (Pi-only hardware tests are
+skipped by default):
+
 ```bash
-pytest tests/
+pip install -r requirements-dev.txt
+pytest                       # full laptop suite (skips hardware)
+pytest tests/test_ndvi.py    # fast inner loop: pure NDVI math
+pytest -m e2e                # end-to-end CLI tests only
+pytest --cov=cropvolare --cov-report=term-missing   # coverage
 ```
+
+Test layers: `test_ndvi.py` (pure math) → `test_geo/batch/field.py` (units) →
+`test_outputs.py` (PDF/HTML/PNG generation) → `test_cli.py` (end-to-end scripts)
+→ `test_edge_cases.py` (grid corners, no-GPS pipeline, dependency guards).
 
 ## What's next
 

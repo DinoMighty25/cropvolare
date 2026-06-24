@@ -37,6 +37,12 @@ flights/
 *.log
 logs/
 
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # Environment
 .env
 .env.local

@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Skip Pi-only hardware tests by default; run them explicitly with `-m hardware`.
+addopts = "-m 'not hardware'"
+markers = [
+    "e2e: end-to-end tests that run the CLI scripts (slower)",
+    "hardware: requires Raspberry Pi camera or serial GPS; skipped by default",
+]

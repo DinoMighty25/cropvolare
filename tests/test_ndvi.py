@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 from cropvolare.ndvi import (
     apply_flatfield,
@@ -10,6 +11,7 @@ from cropvolare.ndvi import (
     correct_leakage,
     extract_channels,
     remove_gamma,
+    save_ndvi_tiff,
 )
 
 
@@ -142,6 +144,39 @@ def test_flatfield_uniform_is_noop():
     frame = np.full((6, 6, 3), 180, dtype=np.uint8)
     gain = build_flatfield([frame])
     np.testing.assert_allclose(gain, 1.0)
+
+
+def test_apply_flatfield_corrects_to_target():
+    # a frame with a dark corner; its own gain map should flatten it back
+    frame = np.full((8, 8, 3), 200, dtype=np.uint8)
+    frame[0, 0] = 120
+    gain = build_flatfield([frame])
+    corrected = apply_flatfield(frame, gain)
+    # every pixel should land near the frame's mean brightness
+    target = int(round(frame.mean()))
+    assert abs(int(corrected[0, 0, 0]) - target) <= 1
+    assert abs(int(corrected[4, 4, 0]) - target) <= 1
+
+
+def test_apply_flatfield_clips_to_uint8():
+    frame = np.full((4, 4, 3), 200, dtype=np.uint8)
+    gain = np.full((4, 4, 3), 5.0)  # huge gain would overflow
+    corrected = apply_flatfield(frame, gain)
+    assert corrected.dtype == np.uint8
+    assert corrected.max() <= 255
+
+
+# --- 16-bit TIFF round-trip -----------------------------------------------
+
+def test_tiff_roundtrip(tmp_path):
+    ndvi = np.linspace(-1.0, 1.0, 64).reshape(8, 8)
+    path = str(tmp_path / "ndvi.tiff")
+    save_ndvi_tiff(ndvi, path)
+    arr = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    assert arr.dtype == np.uint16
+    recovered = arr.astype(np.float64) / 65535.0 * 2.0 - 1.0
+    # 16-bit quantization keeps NDVI well within 1e-3
+    np.testing.assert_allclose(recovered, ndvi, atol=1e-3)
 
 
 # --- zones + colormap ------------------------------------------------------
