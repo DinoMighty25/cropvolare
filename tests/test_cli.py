@@ -51,16 +51,18 @@ def test_process_flight_produces_all_artifacts(geotagged_dir, tmp_path):
     assert "leaflet" in (outdir / "map.html").read_text(encoding="utf-8").lower()
 
 
-def test_process_flight_cell_meters_from_config(all_untagged_dir, tmp_path):
-    # even with no GPS the run should succeed and report an empty field
+def test_process_flight_no_gps_builds_gallery(all_untagged_dir, tmp_path):
+    # with no GPS the run still succeeds and produces a per-image gallery PDF
     outdir = tmp_path / "out2"
     result = run_script("process_flight.py",
                         "--input", str(all_untagged_dir),
                         "--outdir", str(outdir))
     assert result.returncode == 0, result.stderr
-    # report + map still generated for an all-untagged flight
+    # gallery report is produced; the field map / web map are skipped (need GPS)
     assert (outdir / "report.pdf").exists()
-    assert (outdir / "map.html").exists()
+    assert (outdir / "report.pdf").read_bytes()[:5] == b"%PDF-"
+    assert not (outdir / "map.html").exists()
+    assert not (outdir / "heatmap.png").exists()
     fc = json.loads((outdir / "field.geojson").read_text())
     assert fc["metadata"]["n_untagged"] == fc["metadata"]["n_images"]
     assert fc["metadata"]["bbox"] is None

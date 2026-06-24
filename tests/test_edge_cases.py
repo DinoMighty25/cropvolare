@@ -99,6 +99,16 @@ def test_report_and_webmap_without_gps(all_untagged_dir, tmp_path):
     assert "leaflet" in html.read_text(encoding="utf-8").lower()
 
 
+def test_gallery_report_for_untagged(all_untagged_dir, tmp_path):
+    overlay_dir = tmp_path / "ov"
+    fc = batch.process_directory(str(all_untagged_dir), overlay_dir=str(overlay_dir))
+    out = tmp_path / "gallery.pdf"
+    report.build_gallery_report(fc, str(out))
+    assert out.read_bytes()[:5] == b"%PDF-"
+    # every untagged photo still got a per-image NDVI overlay for the gallery
+    assert all(f["properties"]["overlay_png"] for f in fc["features"])
+
+
 # --- dependency import guards ----------------------------------------------
 
 def test_save_image_requires_cv2(monkeypatch, tmp_path):

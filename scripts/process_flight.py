@@ -64,8 +64,9 @@ def main():
     healthy = field_cfg.get("healthy_threshold", 0.5)
     stressed = field_cfg.get("stressed_threshold", 0.3)
     opacity = field_cfg.get("overlay_opacity", 0.6)
-    write_overlays = (not args.no_overlays) and field_cfg.get(
-        "write_per_image_overlays", False)
+    # Per-photo NDVI overlays default on: they're the gallery content for
+    # no-GPS flights and useful output otherwise. Disable with --no-overlays.
+    write_overlays = not args.no_overlays
 
     os.makedirs(args.outdir, exist_ok=True)
     now = datetime.now(timezone.utc)
@@ -95,21 +96,26 @@ def main():
           f"(healthy {summary['pct_healthy']}% / stressed {summary['pct_stressed']}% "
           f"/ severe {summary['pct_severe']}%)")
 
-    heatmap_path = os.path.join(args.outdir, "heatmap.png")
-    fieldmap.render_grid_png(grid, heatmap_path)
-    print(f"  wrote {heatmap_path}")
-
     report_path = os.path.join(args.outdir, "report.pdf")
-    report.build_report(fc, grid, cells, problems, summary,
-                        heatmap_path if not grid.get("empty") else None,
-                        report_path)
-    print(f"  wrote {report_path}")
+    if grid.get("empty"):
+        print("  no GPS in photos - building a per-image NDVI gallery (no field map)")
+        report.build_gallery_report(fc, report_path,
+                                    title="Field NDVI Report (no GPS)")
+        print(f"  wrote {report_path}")
+        print("  skipped heatmap.png + map.html (a field map needs geotagged photos)")
+    else:
+        heatmap_path = os.path.join(args.outdir, "heatmap.png")
+        fieldmap.render_grid_png(grid, heatmap_path)
+        print(f"  wrote {heatmap_path}")
 
-    map_path = os.path.join(args.outdir, "map.html")
-    webmap.build_webmap(fc, grid, cells, problems,
-                        heatmap_path if not grid.get("empty") else None,
-                        map_path, overlay_opacity=opacity)
-    print(f"  wrote {map_path}")
+        report.build_report(fc, grid, cells, problems, summary,
+                            heatmap_path, report_path)
+        print(f"  wrote {report_path}")
+
+        map_path = os.path.join(args.outdir, "map.html")
+        webmap.build_webmap(fc, grid, cells, problems, heatmap_path,
+                            map_path, overlay_opacity=opacity)
+        print(f"  wrote {map_path}")
 
     print("done.")
 

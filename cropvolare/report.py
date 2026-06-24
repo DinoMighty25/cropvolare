@@ -6,6 +6,8 @@ single-page: header, the field heatmap as the hero element, a stats band, and a
 ranked table of the worst areas with their coordinates.
 """
 
+import os
+
 from fpdf import FPDF
 
 _STATUS_LABEL = {
@@ -111,3 +113,72 @@ def _centroid(bbox):
         return None
     min_lon, min_lat, max_lon, max_lat = bbox
     return ((min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0)
+
+
+def build_gallery_report(feature_collection, out_path,
+                         title="Field NDVI Report (no GPS)"):
+    """Contact-sheet PDF of every photo's NDVI overlay, for flights without GPS.
+
+    Each photo gets a thumbnail (its colorized NDVI map) plus a caption with the
+    filename, mean NDVI, and health status. Used when no photo carries GPS, so a
+    georeferenced field map isn't possible but per-image NDVI still is.
+    Requires each feature's properties to include an existing 'overlay_png'.
+    """
+    meta = feature_collection.get("metadata", {})
+    feats = feature_collection.get("features", [])
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
+
+    ndvis = [f["properties"]["mean_ndvi"] for f in feats]
+    mean = round(sum(ndvis) / len(ndvis), 3) if ndvis else None
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6,
+             f"Date: {meta.get('flight_date') or 'unknown'}    "
+             f"Images: {len(feats)}    "
+             f"Mean NDVI: {mean if mean is not None else 'n/a'}",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6,
+             "No GPS data - per-image gallery (a field map needs geotagged photos).",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    # thumbnail grid
+    cols = 3
+    margin = 10
+    cell_w = (210 - 2 * margin) / cols
+    thumb_w = cell_w - 4
+    cap_h = 9
+    row_h = thumb_w + cap_h           # square-worst-case slot keeps rows clear
+    page_bottom = 297 - margin
+    x0 = margin
+    y = pdf.get_y()
+
+    for r in range(0, len(feats), cols):
+        if y + row_h > page_bottom:
+            pdf.add_page()
+            y = margin
+        for ci, f in enumerate(feats[r:r + cols]):
+            p = f["properties"]
+            x = x0 + ci * cell_w
+            overlay = p.get("overlay_png")
+            if overlay and os.path.exists(overlay):
+                try:
+                    pdf.image(overlay, x=x + 2, y=y, w=thumb_w)
+                except Exception:  # noqa: BLE001 - a bad thumbnail shouldn't kill the report
+                    pass
+            name = p.get("filename", "")
+            if len(name) > 20:
+                name = name[:17] + "..."
+            pdf.set_xy(x + 2, y + thumb_w + 1)
+            pdf.set_font("Helvetica", "", 7)
+            pdf.multi_cell(thumb_w, 3,
+                           f"{name}\nNDVI {p['mean_ndvi']} ({p['status']})",
+                           align="C")
+        y += row_h
+
+    pdf.output(out_path)
