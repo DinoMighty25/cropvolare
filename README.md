@@ -80,6 +80,20 @@ This produces, in `--outdir`:
 Photos need GPS in their EXIF. On the Pi, tag captured JPEGs with `scripts/tag_gps.py`
 (reads a serial GPS via pynmea2). Processing runs on a laptop after the flight.
 
+### Ground station (laptop, one command)
+
+`scripts/ground_station.py` pulls a flight folder off the Pi (optional) and runs
+the analysis on the laptop, where there's CPU/RAM to spare — the Pi only captures.
+
+```bash
+# pull from the Pi over SSH, analyze, and open the report:
+python scripts/ground_station.py --host dinomighty@<pi-ip> \
+    --remote flights/today --input flights/today --outdir output/today --open
+
+# analyze a folder you already copied (SD card / manual scp):
+python scripts/ground_station.py --input flights/today --open
+```
+
 ## Running on the Raspberry Pi
 
 Tested on a Pi Zero 2 W + Camera Module 3 (IMX708), Raspberry Pi OS Bookworm.

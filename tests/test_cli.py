@@ -121,3 +121,16 @@ def test_cli_flag_overrides_config(ndvi_jpeg_factory, tmp_path):
                         "--config", cfg, "--gamma", "0.9", "--no-save")
     assert result.returncode == 0, result.stderr
     assert "gamma=0.9" in result.stdout  # flag wins over config
+
+
+# --- ground_station (laptop helper) ----------------------------------------
+
+def test_ground_station_local_analyze(geotagged_dir, tmp_path):
+    # no --host: analyze a local folder, producing the report
+    outdir = tmp_path / "gs"
+    result = run_script("ground_station.py",
+                        "--input", str(geotagged_dir),
+                        "--outdir", str(outdir))
+    assert result.returncode == 0, result.stderr
+    assert (outdir / "report.pdf").exists()
+    assert (outdir / "field.geojson").exists()
