@@ -82,6 +82,22 @@ def test_skips_tag_when_no_fix_yet(tmp_path):
     assert len(saved) == 2
 
 
+def test_stop_fn_ends_infinite_loop(tmp_path):
+    # n_frames=None would run forever; stop_fn ends it after 2 frames
+    state = {"n": 0}
+
+    def cap():
+        state["n"] += 1
+        return _frame(state["n"])
+
+    saved = cf.run_capture(
+        str(tmp_path), capture_fn=cap, n_frames=None, interval=0,
+        stop_fn=lambda: state["n"] >= 2,
+        sleep_fn=lambda s: None, log_fn=lambda m: None,
+    )
+    assert len(saved) == 2
+
+
 def test_saved_jpegs_are_readable_and_geotaggable(tmp_path):
     # end-to-end with the REAL save + tag path: files load back and carry GPS
     from cropvolare import geo

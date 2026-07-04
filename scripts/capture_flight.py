@@ -35,10 +35,11 @@ def _default_save(path, frame):
 
 def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
                 save_fn=None, tag_fn=None, sleep_fn=None, log_fn=print,
-                prefix="frame"):
+                stop_fn=None, prefix="frame"):
     """Capture loop core. Injected callables make it testable without hardware.
 
     capture_fn() -> BGR frame; gps_fn() -> {'lat','lon','alt'} or None.
+    stop_fn() -> True ends the loop cleanly (used by fly.py via a STOP file).
     n_frames=None runs until interrupted by the caller. Returns saved paths.
     """
     save_fn = save_fn or _default_save
@@ -49,6 +50,9 @@ def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
     saved = []
     i = 0
     while n_frames is None or i < n_frames:
+        if stop_fn is not None and stop_fn():
+            log_fn("stop requested - ending capture")
+            break
         frame = capture_fn()
         path = os.path.join(outdir, f"{prefix}_{i:04d}.jpg")
         save_fn(path, frame)
@@ -155,6 +159,13 @@ def main():
     print(f"capturing {'until Ctrl+C' if n_frames is None else n_frames} "
           f"frame(s), one every {args.interval}s -> {args.outdir}")
 
+    # a STOP file in the output folder ends capture cleanly - lets fly.py stop
+    # a detached run even after the SSH session that started it is gone
+    stop_path = os.path.join(args.outdir, "STOP")
+    if os.path.exists(stop_path):
+        os.remove(stop_path)  # clear a stale request from a previous run
+    print(f"to stop: Ctrl+C, or create {stop_path}")
+
     try:
         saved = run_capture(
             args.outdir,
@@ -162,6 +173,7 @@ def main():
             n_frames=n_frames,
             interval=args.interval,
             gps_fn=(gps.latest if gps else None),
+            stop_fn=lambda: os.path.exists(stop_path),
         )
         print(f"done: {len(saved)} frame(s) saved")
     except KeyboardInterrupt:

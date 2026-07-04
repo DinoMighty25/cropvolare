@@ -80,6 +80,36 @@ This produces, in `--outdir`:
 Photos need GPS in their EXIF. On the Pi, tag captured JPEGs with `scripts/tag_gps.py`
 (reads a serial GPS via pynmea2). Processing runs on a laptop after the flight.
 
+### Field workflow (fly day)
+
+Everything you do at the field, in order:
+
+```bash
+# 1. power the Pi, SSH in from your phone or laptop:
+ssh dinomighty@<pi-ip>
+cd cropvolare
+
+# 2. start capture - one command, no arguments:
+python scripts/fly.py
+#    runs preflight checks (camera, disk), starts capturing into a new
+#    timestamped flights/ folder, and waits until the FIRST FRAME is saved
+#    before telling you it's safe to fly. SSH dropping does NOT stop it.
+
+# 3. fly slow, overlapping passes over the field.
+
+# 4. land, SSH back in (any session):
+python scripts/fly.py status    # optional: frame count + last-frame age
+python scripts/fly.py stop      # finish cleanly, prints the folder + next step
+
+# 5. on the laptop, pull + analyze + open the report:
+python scripts/ground_station.py --host dinomighty@<pi-ip> \
+    --remote cropvolare/flights/<dir> --input flights/<dir> --open
+```
+
+Optional zero-SSH mode: install `scripts/cropvolare-flight.service` (see the
+comments inside it) and the Pi starts capturing at power-on — plug in, fly,
+then `fly.py stop` after landing.
+
 ### Ground station (laptop, one command)
 
 `scripts/ground_station.py` pulls a flight folder off the Pi (optional) and runs
@@ -140,10 +170,13 @@ cropvolare/
 │   ├── report.py           # one-page PDF report
 │   └── webmap.py           # standalone interactive web map
 ├── scripts/
-│   ├── capture_ndvi.py     # single-image cli
+│   ├── fly.py              # Pi-side one-command field capture (start/status/stop)
 │   ├── capture_flight.py   # Pi-side burst capture -> geotagged JPEGs
+│   ├── capture_ndvi.py     # single-image cli
+│   ├── ground_station.py   # laptop: pull flight off the Pi + analyze + open report
 │   ├── process_flight.py   # whole-flight pipeline -> report
-│   └── tag_gps.py          # Pi-side GPS EXIF tagging
+│   ├── tag_gps.py          # Pi-side GPS EXIF tagging
+│   └── cropvolare-flight.service  # optional: capture at power-on (systemd)
 ├── tests/
 ├── config/
 │   └── default.json

@@ -1,0 +1,26 @@
+# CropVolare: start flight capture automatically at power-on (OPTIONAL).
+# With this installed, plugging in the Pi = capturing. No SSH needed at all.
+#
+# Install on the Pi (adjust User/paths if your username or clone differ):
+#   sudo cp scripts/cropvolare-flight.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable cropvolare-flight
+#
+# Every boot starts a new timestamped flight folder. Stop a run with:
+#   python scripts/fly.py stop        (or: sudo systemctl stop cropvolare-flight)
+# Disable boot capture again with:
+#   sudo systemctl disable cropvolare-flight
+
+[Unit]
+Description=CropVolare flight capture
+After=multi-user.target
+
+[Service]
+Type=simple
+User=dinomighty
+WorkingDirectory=/home/dinomighty/cropvolare
+ExecStart=/usr/bin/python3 scripts/fly.py start --foreground
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
