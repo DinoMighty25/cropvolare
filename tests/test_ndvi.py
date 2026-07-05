@@ -13,6 +13,7 @@ from cropvolare.ndvi import (
     extract_channels,
     remove_gamma,
     save_ndvi_tiff,
+    solve_leakage_k,
 )
 
 
@@ -184,6 +185,35 @@ def test_apply_flatfield_clips_to_uint8():
     corrected = apply_flatfield(frame, gain)
     assert corrected.dtype == np.uint8
     assert corrected.max() <= 255
+
+
+# --- grey-card leakage calibration ------------------------------------------
+
+def test_solve_leakage_k_recovers_bleed():
+    # grey card: equal true reflectance, but red channel reads 60% higher
+    # from NIR bleed -> k should come out at exactly 0.6
+    img = np.zeros((40, 40, 3), dtype=np.uint8)
+    img[:, :, 0] = 100   # NIR (blue channel)
+    img[:, :, 2] = 160   # red channel = nir + 0.6*nir
+    k = solve_leakage_k(img, gamma=1.0)
+    assert abs(k - 0.6) < 1e-6
+    # and with that k the card reads NDVI ~ 0 (the calibration target)
+    ndvi = compute_ndvi_from_image(img, gamma=1.0, leakage_k=k)
+    assert abs(float(ndvi.mean())) < 1e-6
+
+
+def test_solve_leakage_k_clips_at_zero():
+    # red below NIR means no bleed to correct -> k = 0, never negative
+    img = np.zeros((40, 40, 3), dtype=np.uint8)
+    img[:, :, 0] = 150
+    img[:, :, 2] = 100
+    assert solve_leakage_k(img, gamma=1.0) == 0.0
+
+
+def test_solve_leakage_k_rejects_black_frame():
+    import pytest
+    with pytest.raises(ValueError):
+        solve_leakage_k(np.zeros((40, 40, 3), dtype=np.uint8), gamma=1.0)
 
 
 # --- 16-bit TIFF round-trip -----------------------------------------------

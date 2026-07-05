@@ -147,6 +147,30 @@ def compute_ndvi_from_image(image, gamma=0.8, leakage_k=0.6):
     return compute_ndvi(nir, red)
 
 
+def solve_leakage_k(image, gamma=0.8, center_frac=0.5):
+    """Solve the red-leakage constant k from a photo of a neutral grey card.
+
+    A grey card reflects red and NIR equally, so any excess in the red channel
+    is NIR bleeding through the filter: red_lin - k*nir_lin = nir_lin, giving
+    k = (red_lin - nir_lin) / nir_lin. Only the central region of the frame is
+    used (avoids vignetting). Returns k >= 0; with this k the card reads
+    NDVI = 0, which is the calibration target.
+    """
+    nir, red = extract_channels(image)
+    nir = remove_gamma(nir, gamma)
+    red = remove_gamma(red, gamma)
+
+    h, w = nir.shape
+    dy = int(h * (1 - center_frac) / 2)
+    dx = int(w * (1 - center_frac) / 2)
+    nir_mean = nir[dy:h - dy, dx:w - dx].mean()
+    red_mean = red[dy:h - dy, dx:w - dx].mean()
+
+    if nir_mean < 1e-6:
+        raise ValueError("grey-card image is too dark to calibrate from")
+    return max(0.0, (red_mean - nir_mean) / nir_mean)
+
+
 def compute_vari(image):
     """VARI = (G - R) / (G + R - B). Filter-free vegetation index cross-check.
 

@@ -123,6 +123,27 @@ def test_cli_flag_overrides_config(ndvi_jpeg_factory, tmp_path):
     assert "gamma=0.9" in result.stdout  # flag wins over config
 
 
+# --- calibrate (grey-card leakage solve) ------------------------------------
+
+def test_calibrate_solves_and_writes_config(tmp_path):
+    import cv2
+    import numpy as np
+    grey = np.zeros((64, 64, 3), dtype=np.uint8)
+    grey[:, :, 0] = 100   # NIR
+    grey[:, :, 2] = 160   # red with 0.6 bleed
+    card = str(tmp_path / "grey.png")   # png: lossless, exact k
+    cv2.imwrite(card, grey)
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps({"ndvi": {"leakage_k": 0.6}}))
+
+    result = run_script("calibrate.py", "--input", card, "--gamma", "1.0",
+                        "--config", str(cfg_path), "--write")
+    assert result.returncode == 0, result.stderr
+    assert "solved leakage_k = 0.6" in result.stdout
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["ndvi"]["leakage_k"] == 0.6
+
+
 # --- ground_station (laptop helper) ----------------------------------------
 
 def test_ground_station_local_analyze(geotagged_dir, tmp_path):

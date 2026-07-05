@@ -80,6 +80,31 @@ This produces, in `--outdir`:
 Photos need GPS in their EXIF. On the Pi, tag captured JPEGs with `scripts/tag_gps.py`
 (reads a serial GPS via pynmea2). Processing runs on a laptop after the flight.
 
+### Filter & calibration (once, after mounting the red filter)
+
+The pipeline expects a **deep-red filter** (Wratten 25 / Tiffen #25 / Rosco #19
+or #26 / ~610-650nm longpass glass) on the NoIR camera: it blocks blue-green so
+the blue channel reads NIR and the red channel reads visible red. Don't use a
+720nm+ "IR-only" filter (kills the red channel) or a blue "superblue" filter
+(opposite channel mapping).
+
+With the filter mounted, calibrate the NIR-bleed correction from one photo of a
+neutral grey card (photography 18% grey card, in the light you'll fly in):
+
+```bash
+# on the Pi: photograph the grey card filling the frame
+python scripts/capture_flight.py -o calib --count 1
+
+# solve the leakage constant and save it into the config
+python scripts/calibrate.py --input calib/frame_0000.jpg --write
+
+# optional sanity check: a healthy plant should read ~0.4-0.6
+python scripts/calibrate.py --input calib/frame_0000.jpg --plant plant.jpg
+```
+
+Every capture and analysis run reads the saved value from
+`config/default.json` automatically. Re-calibrate if you change the filter.
+
 ### Field workflow (fly day)
 
 Everything you do at the field, in order:
