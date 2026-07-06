@@ -6,7 +6,7 @@
   },
   "ndvi": {
     "gamma": 0.8,
-    "leakage_k": 0.6,
+    "leakage_k": 2.0,
     "stress_threshold": 0.3,
     "block_size": 64
   },
