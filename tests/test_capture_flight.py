@@ -82,6 +82,16 @@ def test_skips_tag_when_no_fix_yet(tmp_path):
     assert len(saved) == 2
 
 
+def test_sync_called_every_n_frames(tmp_path):
+    sync_calls = []
+    cf.run_capture(
+        str(tmp_path), capture_fn=lambda: _frame(1), n_frames=12, interval=0,
+        sync_every=5, sync_fn=lambda: sync_calls.append(1),
+        sleep_fn=lambda s: None, log_fn=lambda m: None,
+    )
+    assert len(sync_calls) == 2  # after frames 5 and 10
+
+
 def test_stop_fn_ends_infinite_loop(tmp_path):
     # n_frames=None would run forever; stop_fn ends it after 2 frames
     state = {"n": 0}

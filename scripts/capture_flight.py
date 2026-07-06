@@ -35,16 +35,22 @@ def _default_save(path, frame):
 
 def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
                 save_fn=None, tag_fn=None, sleep_fn=None, log_fn=print,
-                stop_fn=None, prefix="frame"):
+                stop_fn=None, sync_every=5, sync_fn=None, prefix="frame"):
     """Capture loop core. Injected callables make it testable without hardware.
 
     capture_fn() -> BGR frame; gps_fn() -> {'lat','lon','alt'} or None.
     stop_fn() -> True ends the loop cleanly (used by fly.py via a STOP file).
+    Every sync_every frames the OS write cache is flushed (sync_fn, default
+    os.sync) so cutting power after landing loses at most a few frames - a
+    real flight ended with 16 zero-byte JPEGs because the X306 switch was
+    flipped while ~30s of frames sat unflushed in the page cache.
     n_frames=None runs until interrupted by the caller. Returns saved paths.
     """
     save_fn = save_fn or _default_save
     tag_fn = tag_fn or geo.write_gps
     sleep_fn = sleep_fn or time.sleep
+    if sync_fn is None:
+        sync_fn = getattr(os, "sync", None)  # not available on Windows
     os.makedirs(outdir, exist_ok=True)
 
     saved = []
@@ -65,6 +71,8 @@ def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
                 tagged = True
 
         saved.append(path)
+        if sync_fn is not None and sync_every and (i + 1) % sync_every == 0:
+            sync_fn()  # bound abrupt-power-off loss to the last few frames
         log_fn(f"[{i + 1}{'/' + str(n_frames) if n_frames else ''}] "
                f"{os.path.basename(path)}{' +gps' if tagged else ''}")
         i += 1
