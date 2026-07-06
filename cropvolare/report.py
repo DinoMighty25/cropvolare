@@ -7,8 +7,35 @@ ranked table of the worst areas with their coordinates.
 """
 
 import os
+import tempfile
 
 from fpdf import FPDF
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+
+def _thumbnail(src, out_dir, max_px=360):
+    """Downscale an overlay to a small JPEG for the gallery, return its path.
+
+    Without this the PDF embeds every full-resolution overlay (hundreds of MB
+    for a real flight). Falls back to the original if cv2 is unavailable.
+    """
+    if cv2 is None:
+        return src
+    img = cv2.imread(src)
+    if img is None:
+        return src
+    h, w = img.shape[:2]
+    scale = min(1.0, max_px / float(max(h, w)))
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_AREA)
+    path = os.path.join(out_dir, os.path.basename(src) + ".thumb.jpg")
+    cv2.imwrite(path, img)
+    return path
 
 _STATUS_LABEL = {
     "healthy": "Healthy",
@@ -158,27 +185,33 @@ def build_gallery_report(feature_collection, out_path,
     x0 = margin
     y = pdf.get_y()
 
-    for r in range(0, len(feats), cols):
-        if y + row_h > page_bottom:
-            pdf.add_page()
-            y = margin
-        for ci, f in enumerate(feats[r:r + cols]):
-            p = f["properties"]
-            x = x0 + ci * cell_w
-            overlay = p.get("overlay_png")
-            if overlay and os.path.exists(overlay):
-                try:
-                    pdf.image(overlay, x=x + 2, y=y, w=thumb_w)
-                except Exception:  # noqa: BLE001 - a bad thumbnail shouldn't kill the report
-                    pass
-            name = p.get("filename", "")
-            if len(name) > 20:
-                name = name[:17] + "..."
-            pdf.set_xy(x + 2, y + thumb_w + 1)
-            pdf.set_font("Helvetica", "", 7)
-            pdf.multi_cell(thumb_w, 3,
-                           f"{name}\nNDVI {p['mean_ndvi']} ({p['status']})",
-                           align="C")
-        y += row_h
+    thumb_dir = tempfile.mkdtemp(prefix="cropvolare_thumbs_")
+    try:
+        for r in range(0, len(feats), cols):
+            if y + row_h > page_bottom:
+                pdf.add_page()
+                y = margin
+            for ci, f in enumerate(feats[r:r + cols]):
+                p = f["properties"]
+                x = x0 + ci * cell_w
+                overlay = p.get("overlay_png")
+                if overlay and os.path.exists(overlay):
+                    try:
+                        pdf.image(_thumbnail(overlay, thumb_dir),
+                                  x=x + 2, y=y, w=thumb_w)
+                    except Exception:  # noqa: BLE001 - a bad thumbnail shouldn't kill the report
+                        pass
+                name = p.get("filename", "")
+                if len(name) > 20:
+                    name = name[:17] + "..."
+                pdf.set_xy(x + 2, y + thumb_w + 1)
+                pdf.set_font("Helvetica", "", 7)
+                pdf.multi_cell(thumb_w, 3,
+                               f"{name}\nNDVI {p['mean_ndvi']} ({p['status']})",
+                               align="C")
+            y += row_h
 
-    pdf.output(out_path)
+        pdf.output(out_path)
+    finally:
+        import shutil
+        shutil.rmtree(thumb_dir, ignore_errors=True)
