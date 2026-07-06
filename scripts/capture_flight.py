@@ -25,7 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cropvolare import geo
-from cropvolare.ndvi import capture_frame, create_camera
+from cropvolare.ndvi import capture_frame, create_camera, lock_exposure
 
 
 def _default_save(path, frame):
@@ -152,10 +152,12 @@ def main():
         print(f"starting GPS reader on {args.gps_port} ...")
         gps = GpsReader(port=args.gps_port).start()
 
-    print("initializing camera (controls locked) ...")
+    print("initializing camera ...")
     cam = create_camera()
     cam.start()
-    time.sleep(args.warmup)
+    time.sleep(args.warmup)          # auto-exposure settles on the scene
+    exp, gain = lock_exposure(cam)   # then freeze for the whole flight
+    print(f"exposure locked: {exp} us, gain {gain:.2f}")
     print(f"capturing {'until Ctrl+C' if n_frames is None else n_frames} "
           f"frame(s), one every {args.interval}s -> {args.outdir}")
 

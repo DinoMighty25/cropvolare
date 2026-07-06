@@ -33,10 +33,14 @@ except ImportError:
 
 def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
                   exposure_us=None):
-    """Set up the NoIR camera with LOCKED controls.
+    """Set up the NoIR camera for NDVI capture.
 
-    Auto white-balance and auto-exposure are disabled on purpose: leaving them
-    on makes NDVI values incomparable between frames. Focus is fixed at infinity.
+    White balance is always locked (fixed ColourGains) and focus fixed at
+    infinity, so channel ratios stay comparable between frames. Exposure:
+    pass exposure_us to hard-lock a value, or leave None to let auto-exposure
+    settle during warmup - the capture helpers then freeze it with
+    lock_exposure() so every frame in the session matches. (Never fly with AE
+    still enabled: per-frame exposure changes make NDVI incomparable.)
     Returns a configured (but not started) Picamera2.
     """
     if Picamera2 is None:
@@ -55,13 +59,33 @@ def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
         "LensPosition": 0.0,         # focus at infinity
         "AwbEnable": False,          # locked white balance
         "ColourGains": colour_gains,
-        "AeEnable": False,           # locked exposure
     }
     if exposure_us is not None:
+        controls["AeEnable"] = False
         controls["ExposureTime"] = int(exposure_us)
+    else:
+        controls["AeEnable"] = True  # settle now, freeze via lock_exposure()
     cam.set_controls(controls)
 
     return cam
+
+
+def lock_exposure(cam):
+    """Freeze auto-exposure at its current settled values.
+
+    Call after the sensor has had a couple of seconds running with AE enabled;
+    from then on every frame uses identical exposure and analogue gain, which
+    NDVI comparability requires. Returns (exposure_us, analogue_gain).
+    """
+    meta = cam.capture_metadata()
+    exposure = int(meta["ExposureTime"])
+    gain = float(meta["AnalogueGain"])
+    cam.set_controls({
+        "AeEnable": False,
+        "ExposureTime": exposure,
+        "AnalogueGain": gain,
+    })
+    return exposure, gain
 
 
 def _to_bgr(frame):
@@ -81,10 +105,11 @@ def capture_frame(cam):
 
 
 def capture_image(cam, warmup=2):
-    """Start the camera, grab a single frame, stop. Returns BGR numpy array."""
+    """Start the camera, settle+lock exposure, grab one frame, stop. BGR array."""
     import time
     cam.start()
-    time.sleep(warmup)  # let the sensor settle even with controls locked
+    time.sleep(warmup)   # let auto-exposure settle on the scene
+    lock_exposure(cam)   # then freeze it (no-op if already hard-locked)
     frame = capture_frame(cam)
     cam.stop()
     return frame

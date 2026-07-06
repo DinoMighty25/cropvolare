@@ -36,6 +36,26 @@ def test_capture_frame_converts_rgb_to_bgr():
     assert bgr[0, 0, 0] == 0
 
 
+def test_lock_exposure_freezes_settled_values():
+    from cropvolare.ndvi import lock_exposure
+
+    class _MeteringCam:
+        def __init__(self):
+            self.controls = None
+
+        def capture_metadata(self):
+            return {"ExposureTime": 8000, "AnalogueGain": 2.5}
+
+        def set_controls(self, controls):
+            self.controls = controls
+
+    cam = _MeteringCam()
+    exposure, gain = lock_exposure(cam)
+    assert (exposure, gain) == (8000, 2.5)
+    assert cam.controls == {"AeEnable": False, "ExposureTime": 8000,
+                            "AnalogueGain": 2.5}
+
+
 def test_extract_channels_shape():
     img = np.random.randint(0, 256, (100, 100, 3), dtype=np.uint8)
     nir, red = extract_channels(img)
