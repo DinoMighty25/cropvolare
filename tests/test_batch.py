@@ -40,6 +40,15 @@ def test_process_directory_collection(geotagged_dir):
     assert min_lon <= max_lon and min_lat <= max_lat
 
 
+def test_process_directory_skips_unreadable(geotagged_dir):
+    # a 0-byte / truncated JPEG (like a mid-write frame at capture stop) must
+    # be skipped and counted, not crash the whole flight
+    open(str(geotagged_dir / "frame_bad.jpg"), "w").close()  # 0 bytes
+    fc = batch.process_directory(str(geotagged_dir))
+    assert fc["metadata"]["n_unreadable"] == 1
+    assert fc["metadata"]["n_images"] == 5   # the 5 good ones still processed
+
+
 def test_process_directory_overlays(geotagged_dir, tmp_path):
     overlay_dir = tmp_path / "overlays"
     fc = batch.process_directory(str(geotagged_dir), overlay_dir=str(overlay_dir))

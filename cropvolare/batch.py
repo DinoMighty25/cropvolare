@@ -105,11 +105,18 @@ def process_directory(input_dir, gamma=0.8, leakage_k=0.6, block_size=64,
     paths = sorted(set(paths))
 
     features = []
+    unreadable = []
     for p in paths:
-        features.append(process_image(
-            p, gamma=gamma, leakage_k=leakage_k,
-            block_size=block_size, overlay_dir=overlay_dir,
-        ))
+        try:
+            features.append(process_image(
+                p, gamma=gamma, leakage_k=leakage_k,
+                block_size=block_size, overlay_dir=overlay_dir,
+            ))
+        except Exception as exc:  # noqa: BLE001 - a bad frame must not kill a whole flight
+            # real flights produce the occasional 0-byte / truncated JPEG
+            # (e.g. a mid-write frame when capture stops); skip and count it
+            unreadable.append(os.path.basename(p))
+            print(f"  skipped unreadable frame {os.path.basename(p)}: {exc}")
 
     tagged = [f for f in features if f.get("geometry")]
     n_untagged = len(features) - len(tagged)
@@ -120,6 +127,7 @@ def process_directory(input_dir, gamma=0.8, leakage_k=0.6, block_size=64,
         "metadata": {
             "flight_date": flight_date,
             "n_images": len(features),
+            "n_unreadable": len(unreadable),
             "n_untagged": n_untagged,
             "bbox": _bbox(tagged),
             "params": {
