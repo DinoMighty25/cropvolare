@@ -101,20 +101,18 @@ def lock_exposure(cam):
     return exposure, gain
 
 
-def _to_bgr(frame):
-    """picamera2 gives RGB; flip to BGR for opencv."""
-    if cv2 is not None:
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    return frame[:, :, ::-1].copy()
-
-
 def capture_frame(cam):
     """Grab one frame from an ALREADY-STARTED camera. Returns BGR.
+
+    No channel conversion: picamera2's "RGB888" format is already laid out
+    [B, G, R] in memory (see the picamera2 manual's format table - the naming
+    is counter-intuitive). Converting again would swap red and blue, putting
+    the sensor's red channel in the NIR slot and sign-flipping NDVI.
 
     Use this in a capture loop (e.g. a flight) where the camera is started once
     and kept running - avoids the start/warmup/stop cost on every shot.
     """
-    return _to_bgr(cam.capture_array())
+    return cam.capture_array()
 
 
 def capture_image(cam, warmup=2):

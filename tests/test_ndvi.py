@@ -27,13 +27,15 @@ class _FakeCam:
         return self._rgb
 
 
-def test_capture_frame_converts_rgb_to_bgr():
-    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
-    rgb[:, :, 0] = 255  # pure red in RGB
-    bgr = capture_frame(_FakeCam(rgb))
-    # red should land in the BGR blue-index... i.e. channel 2 after conversion
-    assert bgr[0, 0, 2] == 255
-    assert bgr[0, 0, 0] == 0
+def test_capture_frame_keeps_channel_order():
+    # picamera2 "RGB888" is already [B, G, R] in memory - capture_frame must
+    # NOT convert, or red and blue swap and NDVI sign-flips
+    arr = np.zeros((2, 2, 3), dtype=np.uint8)
+    arr[:, :, 0] = 200  # channel 0 (blue slot = NIR under the red filter)
+    arr[:, :, 2] = 50   # channel 2 (red slot)
+    out = capture_frame(_FakeCam(arr))
+    assert out[0, 0, 0] == 200
+    assert out[0, 0, 2] == 50
 
 
 def test_lock_exposure_freezes_settled_values():
