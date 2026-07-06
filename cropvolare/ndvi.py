@@ -31,16 +31,22 @@ except ImportError:
 # Camera (Pi only)
 # --------------------------------------------------------------------------
 
-def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
-                  exposure_us=None):
+def create_camera(resolution=(2304, 1296), colour_gains=(1.0, 1.0),
+                  exposure_us=None, tuning_file="imx708_noir.json"):
     """Set up the NoIR camera for NDVI capture.
 
-    White balance is always locked (fixed ColourGains) and focus fixed at
-    infinity, so channel ratios stay comparable between frames. Exposure:
-    pass exposure_us to hard-lock a value, or leave None to let auto-exposure
-    settle during warmup - the capture helpers then freeze it with
-    lock_exposure() so every frame in the session matches. (Never fly with AE
-    still enabled: per-frame exposure changes make NDVI incomparable.)
+    Uses the NoIR tuning file: the standard tuning's colour-correction matrix
+    remixes the channels for pleasing photos, which scrambles the NIR/red
+    separation NDVI depends on (measured symptom: sky scoring higher than
+    vegetation). The noir tuning keeps channels honest; colour gains default
+    to neutral (1.0, 1.0) for the same reason.
+
+    White balance is always locked and focus fixed at infinity, so channel
+    ratios stay comparable between frames. Exposure: pass exposure_us to
+    hard-lock a value, or leave None to let auto-exposure settle during
+    warmup - the capture helpers then freeze it with lock_exposure() so every
+    frame in the session matches. (Never fly with AE still enabled: per-frame
+    exposure changes make NDVI incomparable.)
     Returns a configured (but not started) Picamera2.
     """
     if Picamera2 is None:
@@ -48,7 +54,14 @@ def create_camera(resolution=(2304, 1296), colour_gains=(0.88, 0.97),
             "picamera2 not installed - run: sudo apt install python3-picamera2"
         )
 
-    cam = Picamera2()
+    tuning = None
+    if tuning_file:
+        try:
+            tuning = Picamera2.load_tuning_file(tuning_file)
+        except Exception as exc:  # noqa: BLE001 - fall back to default tuning
+            print(f"warning: could not load tuning file {tuning_file}: {exc}")
+
+    cam = Picamera2(tuning=tuning) if tuning is not None else Picamera2()
     config = cam.create_still_configuration(
         main={"size": resolution, "format": "RGB888"},
     )
