@@ -82,6 +82,29 @@ def test_skips_tag_when_no_fix_yet(tmp_path):
     assert len(saved) == 2
 
 
+def test_default_save_stamps_capture_time(tmp_path):
+    import piexif
+    path = str(tmp_path / "stamped.jpg")
+    cf._default_save(path, _frame(100))
+    exif = piexif.load(path)
+    ts = exif["Exif"][piexif.ExifIFD.DateTimeOriginal].decode("ascii")
+    # EXIF datetime format: "YYYY:MM:DD HH:MM:SS"
+    assert len(ts) == 19 and ts[4] == ":" and ts[7] == ":"
+
+
+def test_timestamp_survives_gps_tagging(tmp_path):
+    # geo.write_gps must preserve the capture-time EXIF stamped at save
+    import piexif
+
+    from cropvolare import geo
+    path = str(tmp_path / "both.jpg")
+    cf._default_save(path, _frame(100))
+    geo.write_gps(path, 40.0, -88.0, alt=50.0)
+    exif = piexif.load(path)
+    assert piexif.ExifIFD.DateTimeOriginal in exif["Exif"]
+    assert geo.read_gps(path) is not None
+
+
 def test_sync_called_every_n_frames(tmp_path):
     sync_calls = []
     cf.run_capture(

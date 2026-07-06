@@ -8,9 +8,11 @@
     "gamma": 0.8,
     "leakage_k": 2.0,
     "stress_threshold": 0.3,
-    "block_size": 64
+    "block_size": 64,
+    "min_sharpness": 0.0
   },
   "calibration": {
+    "flatfield_path": "calibration/gain.npy",
     "ref_roi": [0, 0, 50, 50],
     "known_nir_reflectance": 0.5,
     "known_red_reflectance": 0.5

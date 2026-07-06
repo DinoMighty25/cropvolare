@@ -31,6 +31,19 @@ from cropvolare.ndvi import capture_frame, create_camera, lock_exposure
 def _default_save(path, frame):
     import cv2
     cv2.imwrite(path, frame)
+    # stamp the capture time into EXIF: tag_gps.py's track-matching mode and
+    # ODM stitching both need DateTimeOriginal (file mtimes don't survive
+    # copies). Never let metadata stamping break a flight.
+    try:
+        from datetime import datetime
+
+        import piexif
+        ts = datetime.now().strftime("%Y:%m:%d %H:%M:%S")
+        exif = {"0th": {}, "Exif": {piexif.ExifIFD.DateTimeOriginal: ts},
+                "GPS": {}, "1st": {}, "thumbnail": None}
+        piexif.insert(piexif.dump(exif), path)
+    except Exception:  # noqa: BLE001 - capture must go on without EXIF
+        pass
 
 
 def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,

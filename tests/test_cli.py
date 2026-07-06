@@ -123,6 +123,75 @@ def test_cli_flag_overrides_config(ndvi_jpeg_factory, tmp_path):
     assert "gamma=0.9" in result.stdout  # flag wins over config
 
 
+# --- flat-field: calibrate build + process_flight apply ---------------------
+
+def _write_flat_frames(d, n=3):
+    """Synthetic vignetted white-target frames (NIR falls off harder)."""
+    import cv2
+    import numpy as np
+    os.makedirs(d, exist_ok=True)
+    yy, xx = np.mgrid[0:120, 0:160]
+    r2 = ((yy / 120 - 0.5) ** 2 + (xx / 160 - 0.5) ** 2)
+    r2 = r2 / r2.max()
+    img = np.zeros((120, 160, 3), np.float64)
+    img[:, :, 0] = 200 * (1.0 - 0.5 * r2)
+    img[:, :, 1] = 200 * (1.0 - 0.3 * r2)
+    img[:, :, 2] = 200 * (1.0 - 0.2 * r2)
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    for i in range(n):
+        cv2.imwrite(os.path.join(d, f"flat_{i}.jpg"), img)
+
+
+def test_calibrate_flatfield_builds_and_writes(tmp_path):
+    flat_dir = str(tmp_path / "flats")
+    _write_flat_frames(flat_dir)
+    gain_out = str(tmp_path / "gain.npy")
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps({"calibration": {}}))
+
+    result = run_script("calibrate.py", "--flatfield-dir", flat_dir,
+                        "--gain-out", gain_out, "--config", str(cfg_path),
+                        "--write")
+    assert result.returncode == 0, result.stderr
+    assert "corner/center gain ratio" in result.stdout
+    assert os.path.exists(gain_out)
+    cfg = json.loads(cfg_path.read_text())
+    assert cfg["calibration"]["flatfield_path"] == gain_out
+
+
+def test_process_flight_applies_flatfield(geotagged_dir, tmp_path):
+    flat_dir = str(tmp_path / "flats")
+    _write_flat_frames(flat_dir)
+    gain_out = str(tmp_path / "gain.npy")
+    run_script("calibrate.py", "--flatfield-dir", flat_dir,
+               "--gain-out", gain_out)
+
+    outdir = tmp_path / "out_ff"
+    result = run_script("process_flight.py",
+                        "--input", str(geotagged_dir),
+                        "--outdir", str(outdir),
+                        "--flatfield", gain_out)
+    assert result.returncode == 0, result.stderr
+    assert "flat-field: active" in result.stdout
+    fc = json.loads((outdir / "field.geojson").read_text())
+    assert fc["metadata"]["params"]["flatfield"] is True
+
+
+def test_process_flight_min_sharpness_filters(geotagged_dir, tmp_path):
+    # the fixture's uniform frames are all near-zero sharpness
+    outdir = tmp_path / "out_sh"
+    result = run_script("process_flight.py",
+                        "--input", str(geotagged_dir),
+                        "--outdir", str(outdir),
+                        "--no-flatfield",
+                        "--min-sharpness", "50")
+    assert result.returncode == 0, result.stderr
+    fc = json.loads((outdir / "field.geojson").read_text())
+    assert fc["metadata"]["n_filtered"] == 5
+    assert fc["metadata"]["n_images"] == 0
+    assert (outdir / "report.pdf").exists()  # empty flight still reports
+
+
 # --- calibrate (grey-card leakage solve) ------------------------------------
 
 def test_calibrate_solves_and_writes_config(tmp_path):

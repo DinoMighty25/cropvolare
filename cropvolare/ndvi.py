@@ -225,23 +225,63 @@ def compute_vari(image):
 # Flat-field calibration
 # --------------------------------------------------------------------------
 
-def build_flatfield(frames):
-    """Build a per-pixel gain map from frames of a uniform white panel.
+def build_flatfield(frames, smooth_sigma=25):
+    """Build a per-pixel gain map from frames of a uniform white target.
 
-    Averages the frames, then computes the gain that flattens each pixel to the
-    global mean - this corrects lens vignetting and sensor non-uniformity.
-    Save the result with np.save(...) and reuse it across a capture session.
+    Averages the frames, Gaussian-smooths the average (vignetting is smooth by
+    nature - smoothing kills paper texture and sensor noise in the flats), then
+    computes the gain that flattens each pixel to ITS CHANNEL's mean. Per-channel
+    normalization matters for NDVI: the gain corrects spatial shading only and
+    never rebalances red against NIR, so it stays orthogonal to the leakage
+    calibration. Pass smooth_sigma=0 to skip smoothing (or when cv2 is absent).
     """
     if len(frames) == 0:
         raise ValueError("need at least one frame to build a flat-field map")
     stack = np.stack([f.astype(np.float64) for f in frames], axis=0)
     avg = stack.mean(axis=0)
-    target = avg.mean()
-    return np.where(avg > 1e-6, target / avg, 1.0)
+    if smooth_sigma and cv2 is not None:
+        avg = cv2.GaussianBlur(avg, (0, 0), smooth_sigma)
+    target = avg.mean(axis=(0, 1), keepdims=True)  # per-channel
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(avg > 1e-6, target / avg, 1.0)
+
+
+def save_flatfield(gain, path, max_px=288):
+    """Persist a gain map compactly (downscaled float32 .npy).
+
+    Vignetting is smooth, so a <=max_px-wide map loses nothing meaningful and
+    keeps the file ~0.5 MB instead of tens of MB. apply_flatfield resizes it
+    back up to the image automatically.
+    """
+    import os
+    gain = np.asarray(gain, dtype=np.float32)
+    h, w = gain.shape[:2]
+    if cv2 is not None and max(h, w) > max_px:
+        scale = max_px / float(max(h, w))
+        gain = cv2.resize(gain, (int(w * scale), int(h * scale)),
+                          interpolation=cv2.INTER_AREA)
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    np.save(path, gain)
+
+
+def load_flatfield(path):
+    """Load a gain map saved by save_flatfield."""
+    return np.load(path)
 
 
 def apply_flatfield(image, gain):
-    """Apply a gain map (from build_flatfield) to an image, returns uint8."""
+    """Apply a gain map (from build_flatfield) to an image, returns uint8.
+
+    The gain is resized to the image automatically when shapes differ (gains
+    are stored downscaled by save_flatfield).
+    """
+    gain = np.asarray(gain, dtype=np.float64)
+    if gain.shape[:2] != image.shape[:2]:
+        if cv2 is None:
+            raise RuntimeError("opencv required to resize a stored gain map")
+        gain = cv2.resize(gain, (image.shape[1], image.shape[0]),
+                          interpolation=cv2.INTER_LINEAR)
     corrected = image.astype(np.float64) * gain
     return np.clip(corrected, 0, 255).astype(np.uint8)
 

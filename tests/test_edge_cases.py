@@ -109,6 +109,21 @@ def test_gallery_report_for_untagged(all_untagged_dir, tmp_path):
     assert all(f["properties"]["overlay_png"] for f in fc["features"])
 
 
+def test_gallery_summary_and_cap(all_untagged_dir, tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    fc = batch.process_directory(str(all_untagged_dir))
+    out = tmp_path / "capped.pdf"
+    # 3 fixture frames, cap at 2 -> sampled gallery + note
+    report.build_gallery_report(fc, str(out), max_gallery=2)
+    text = "".join(page.extract_text()
+                   for page in pypdf.PdfReader(str(out)).pages)
+    assert "needing attention" in text          # worst-frames table present
+    assert "showing 2 of 3" in text             # cap note present
+    # worst frame's filename appears in the table
+    worst = min(fc["features"], key=lambda f: f["properties"]["mean_ndvi"])
+    assert worst["properties"]["filename"] in text
+
+
 # --- dependency import guards ----------------------------------------------
 
 def test_save_image_requires_cv2(monkeypatch, tmp_path):

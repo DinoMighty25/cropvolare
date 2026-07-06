@@ -105,6 +105,26 @@ python scripts/calibrate.py --input calib/frame_0000.jpg --plant plant.jpg
 Every capture and analysis run reads the saved value from
 `config/default.json` automatically. Re-calibrate if you change the filter.
 
+**Flat-field (removes the NDVI "bullseye").** The lens shades the NIR and red
+channels unequally, which paints a false radial health gradient on every frame.
+Fix it once: photograph a plain white sheet filling the frame in even shade
+(~20 frames), then build the gain map:
+
+```bash
+python scripts/capture_flight.py -o calib_flat --count 20 --interval 0.5
+python scripts/calibrate.py --flatfield-dir calib_flat --write
+```
+
+The map is saved to `calibration/gain.npy` and applied automatically by every
+analysis run (disable with `--no-flatfield`). Rebuild it if the filter or
+camera changes.
+
+**Blurry-frame filter.** Focus is locked at infinity, so frames captured while
+grounded or very low are featureless blur. Every frame gets a `sharpness`
+score in the report; pass `--min-sharpness 15` to `process_flight.py` to drop
+them (default 0 = keep everything, so uniform crop seen from high altitude is
+never silently discarded).
+
 ### Field workflow (fly day)
 
 Everything you do at the field, in order:

@@ -32,6 +32,7 @@ captures/
 output/
 data/
 flights/
+calibration/*.npy
 
 # Logs
 *.log

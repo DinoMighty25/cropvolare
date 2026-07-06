@@ -14,20 +14,20 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cropvolare.ndvi import (
+    apply_flatfield,
     capture_image,
     classify_zones,
     compute_ndvi_from_image,
     compute_vari,
     create_camera,
+    load_flatfield,
     load_image,
     save_ndvi_image,
     save_ndvi_tiff,
 )
 
-DEFAULT_CONFIG = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "config", "default.json",
-)
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG = os.path.join(REPO, "config", "default.json")
 
 
 def load_config(path):
@@ -49,6 +49,11 @@ def main():
     parser.add_argument("--block-size", type=int)
     parser.add_argument("--vari", action="store_true",
                         help="also report VARI (use on an unfiltered photo)")
+    parser.add_argument("--flatfield",
+                        help="gain map .npy (default: calibration.flatfield_path "
+                             "from the config)")
+    parser.add_argument("--no-flatfield", action="store_true",
+                        help="disable flat-field correction")
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--print-zones", action="store_true")
     args = parser.parse_args()
@@ -72,6 +77,16 @@ def main():
         print("capturing...")
         image = capture_image(cam)
     print(f"got image: {image.shape}, {image.dtype}")
+
+    if not args.no_flatfield:
+        ff_path = args.flatfield or cfg.get("calibration", {}).get("flatfield_path")
+        if ff_path:
+            full = ff_path if os.path.isabs(ff_path) else os.path.join(REPO, ff_path)
+            if os.path.exists(full):
+                image = apply_flatfield(image, load_flatfield(full))
+                print(f"flat-field applied ({ff_path})")
+            else:
+                print(f"warning: gain map missing ({full}) - no flat-field")
 
     print(f"computing ndvi (gamma={gamma}, leakage_k={leakage_k})...")
     ndvi = compute_ndvi_from_image(image, gamma=gamma, leakage_k=leakage_k)

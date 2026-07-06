@@ -175,9 +175,11 @@ def test_vari_no_crash_on_zero_denom():
 
 def test_flatfield_flattens_vignette():
     # a darker corner should be brightened back toward the mean
+    # (smooth_sigma=0: smoothing would wash out a single-pixel corner on a
+    # frame this tiny - the smoothing path has its own test below)
     frame = np.full((10, 10, 3), 200, dtype=np.uint8)
     frame[0, 0] = 100
-    gain = build_flatfield([frame, frame])
+    gain = build_flatfield([frame, frame], smooth_sigma=0)
     corrected = apply_flatfield(frame, gain)
     # corrected corner should be closer to the bulk value than the raw corner
     assert corrected[0, 0, 0] > frame[0, 0, 0]
@@ -193,12 +195,46 @@ def test_apply_flatfield_corrects_to_target():
     # a frame with a dark corner; its own gain map should flatten it back
     frame = np.full((8, 8, 3), 200, dtype=np.uint8)
     frame[0, 0] = 120
-    gain = build_flatfield([frame])
+    gain = build_flatfield([frame], smooth_sigma=0)
     corrected = apply_flatfield(frame, gain)
     # every pixel should land near the frame's mean brightness
     target = int(round(frame.mean()))
     assert abs(int(corrected[0, 0, 0]) - target) <= 1
     assert abs(int(corrected[4, 4, 0]) - target) <= 1
+
+
+def test_flatfield_smoothing_ignores_texture():
+    # noisy texture in the flat frames shouldn't imprint on the gain map
+    rng = np.random.RandomState(42)
+    frame = (200 + rng.randint(-30, 31, (200, 200, 3))).astype(np.uint8)
+    noisy_gain = build_flatfield([frame], smooth_sigma=0)
+    smooth_gain = build_flatfield([frame], smooth_sigma=25)
+    assert smooth_gain.std() < noisy_gain.std() / 5
+
+
+def test_flatfield_save_load_roundtrip_resizes(tmp_path):
+    from cropvolare.ndvi import load_flatfield, save_flatfield
+    # radial vignette on a 640x480 flat: corners at ~60% of center
+    yy, xx = np.mgrid[0:480, 0:640]
+    radius = np.sqrt((yy / 480 - 0.5) ** 2 + (xx / 640 - 0.5) ** 2)
+    falloff = 1.0 - 0.55 * (radius / radius.max()) ** 2
+    flat = np.clip(220 * falloff, 0, 255).astype(np.uint8)
+    flat = np.dstack([flat] * 3)
+
+    gain = build_flatfield([flat], smooth_sigma=10)
+    path = str(tmp_path / "gain.npy")
+    save_flatfield(gain, path, max_px=96)
+
+    loaded = load_flatfield(path)
+    assert max(loaded.shape[:2]) <= 96          # stored downscaled
+    assert loaded.dtype == np.float32
+
+    # applying the small stored gain to the full-size vignetted frame
+    # flattens it: corner and center end up close
+    corrected = apply_flatfield(flat, loaded)
+    center = corrected[230:250, 310:330, 0].mean()
+    corner = corrected[0:20, 0:20, 0].mean()
+    assert abs(center - corner) < 12            # raw difference was ~120
 
 
 def test_apply_flatfield_clips_to_uint8():

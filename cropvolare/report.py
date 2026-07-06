@@ -143,12 +143,14 @@ def _centroid(bbox):
 
 
 def build_gallery_report(feature_collection, out_path,
-                         title="Field NDVI Report (no GPS)"):
-    """Contact-sheet PDF of every photo's NDVI overlay, for flights without GPS.
+                         title="Field NDVI Report (no GPS)", max_gallery=60):
+    """Summary + contact-sheet PDF of NDVI overlays, for flights without GPS.
 
-    Each photo gets a thumbnail (its colorized NDVI map) plus a caption with the
-    filename, mean NDVI, and health status. Used when no photo carries GPS, so a
-    georeferenced field map isn't possible but per-image NDVI still is.
+    Page 1 leads with what matters: flight stats and a "frames needing
+    attention" table of the lowest-NDVI frames (the go-look-here list even
+    without coordinates). The thumbnail gallery follows, capped at max_gallery
+    frames (evenly sampled across the flight when over the cap) so a
+    several-hundred-frame flight stays a few readable pages.
     Requires each feature's properties to include an existing 'overlay_png'.
     """
     meta = feature_collection.get("metadata", {})
@@ -158,6 +160,7 @@ def build_gallery_report(feature_collection, out_path,
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
 
+    # --- summary page ----------------------------------------------------
     pdf.set_font("Helvetica", "B", 18)
     pdf.cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
 
@@ -167,12 +170,60 @@ def build_gallery_report(feature_collection, out_path,
     pdf.cell(0, 6,
              f"Date: {meta.get('flight_date') or 'unknown'}    "
              f"Images: {len(feats)}    "
-             f"Mean NDVI: {mean if mean is not None else 'n/a'}",
+             f"Unreadable: {meta.get('n_unreadable', 0)}    "
+             f"Filtered (blur): {meta.get('n_filtered', 0)}",
              new_x="LMARGIN", new_y="NEXT")
+    if ndvis:
+        pdf.cell(0, 6,
+                 f"Mean NDVI: {mean}    "
+                 f"Range: {min(ndvis):.3f} to {max(ndvis):.3f}",
+                 new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 6,
              "No GPS data - per-image gallery (a field map needs geotagged photos).",
              new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    pdf.ln(4)
+
+    # frames needing attention: lowest mean NDVI first
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Frames needing attention (lowest NDVI first)",
+             new_x="LMARGIN", new_y="NEXT")
+    worst = sorted(feats, key=lambda f: f["properties"]["mean_ndvi"])[:10]
+    if worst:
+        pdf.set_font("Helvetica", "B", 10)
+        widths = (15, 70, 35, 35)
+        for wd, hd in zip(widths, ("Rank", "Frame", "Mean NDVI", "Sharpness")):
+            pdf.cell(wd, 7, hd, border=1)
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 10)
+        for rank, f in enumerate(worst, start=1):
+            p = f["properties"]
+            sharp = p.get("sharpness")
+            row = (str(rank), p.get("filename", ""),
+                   f"{p['mean_ndvi']:.3f}",
+                   f"{sharp:.0f}" if sharp is not None else "n/a")
+            for wd, val in zip(widths, row):
+                pdf.cell(wd, 7, val, border=1)
+            pdf.ln()
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.cell(0, 5, "Low sharpness can mean the frame was captured while "
+                       "grounded/too low - judge those with care.",
+                 new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.cell(0, 7, "No frames to report.", new_x="LMARGIN", new_y="NEXT")
+
+    # --- gallery (capped, evenly sampled) --------------------------------
+    gallery = feats
+    if max_gallery and len(feats) > max_gallery:
+        stride = -(-len(feats) // max_gallery)  # ceil division
+        gallery = feats[::stride][:max_gallery]
+
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "B", 12)
+    note = (f"Gallery - showing {len(gallery)} of {len(feats)} frames "
+            f"(evenly sampled)" if len(gallery) < len(feats)
+            else f"Gallery - all {len(gallery)} frames")
+    pdf.cell(0, 8, note, new_x="LMARGIN", new_y="NEXT")
 
     # thumbnail grid
     cols = 3
@@ -187,11 +238,11 @@ def build_gallery_report(feature_collection, out_path,
 
     thumb_dir = tempfile.mkdtemp(prefix="cropvolare_thumbs_")
     try:
-        for r in range(0, len(feats), cols):
+        for r in range(0, len(gallery), cols):
             if y + row_h > page_bottom:
                 pdf.add_page()
                 y = margin
-            for ci, f in enumerate(feats[r:r + cols]):
+            for ci, f in enumerate(gallery[r:r + cols]):
                 p = f["properties"]
                 x = x0 + ci * cell_w
                 overlay = p.get("overlay_png")
@@ -204,10 +255,13 @@ def build_gallery_report(feature_collection, out_path,
                 name = p.get("filename", "")
                 if len(name) > 20:
                     name = name[:17] + "..."
+                sharp = p.get("sharpness")
+                sharp_txt = f"  sharp {sharp:.0f}" if sharp is not None else ""
                 pdf.set_xy(x + 2, y + thumb_w + 1)
                 pdf.set_font("Helvetica", "", 7)
                 pdf.multi_cell(thumb_w, 3,
-                               f"{name}\nNDVI {p['mean_ndvi']} ({p['status']})",
+                               f"{name}\nNDVI {p['mean_ndvi']} "
+                               f"({p['status']}){sharp_txt}",
                                align="C")
             y += row_h
 
