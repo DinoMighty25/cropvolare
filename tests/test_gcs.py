@@ -167,6 +167,79 @@ def test_snapshot_503_without_camera(tmp_path):
     assert b"camera unavailable" in r.data
 
 
+class _FakeSession:
+    """Stands in for CameraSession: serves N frames then reports closed."""
+
+    def __init__(self, n_frames=2):
+        self.n = n_frames
+        self.acquired = 0
+        self.released = 0
+        self.paused = None
+
+    def acquire(self):
+        self.acquired += 1
+
+    def release(self):
+        self.released += 1
+
+    def frame(self):
+        if self.n <= 0:
+            return None
+        self.n -= 1
+        arr = np.zeros((48, 64, 3), np.uint8)
+        arr[:, :, 0] = 150
+        return arr
+
+    def pause_and_close(self, seconds=20):
+        self.paused = seconds
+
+
+def _stream_app(tmp_path, session, service_active=False, start_fn=None):
+    app = gcs.create_app(base=str(tmp_path / "flights"),
+                         fields_dir=str(tmp_path / "fields"),
+                         session=session,
+                         start_fn=start_fn or (lambda base, **kw: 0),
+                         stop_fn=lambda base, **kw: 0,
+                         flight_service_active_fn=lambda: service_active,
+                         config={"ndvi": {"gamma": 0.8, "leakage_k": 2.0}})
+    app.testing = True
+    return app.test_client()
+
+
+def test_stream_serves_mjpeg_and_releases(tmp_path):
+    session = _FakeSession(n_frames=2)
+    c = _stream_app(tmp_path, session)
+    r = c.get("/api/stream.mjpg")
+    assert r.status_code == 200
+    assert "multipart/x-mixed-replace" in r.content_type
+    body = r.data                      # consumes the generator to its end
+    assert body.count(b"--frame") == 2
+    assert b"\xff\xd8" in body         # JPEG magic inside a part
+    assert session.acquired == 1
+    assert session.released == 1       # camera freed when the stream ended
+
+
+def test_stream_refused_while_flight_service_runs(tmp_path):
+    c = _stream_app(tmp_path, _FakeSession(), service_active=True)
+    assert c.get("/api/stream.mjpg").status_code == 409
+
+
+def test_stream_409_when_session_paused(tmp_path):
+    session = _FakeSession()
+    session.acquire = lambda: (_ for _ in ()).throw(
+        RuntimeError("camera reserved for capture"))
+    c = _stream_app(tmp_path, session)
+    assert c.get("/api/stream.mjpg").status_code == 409
+
+
+def test_start_hands_camera_over(tmp_path):
+    session = _FakeSession()
+    c = _stream_app(tmp_path, session)
+    r = c.post("/api/start", json={})
+    assert r.status_code == 200
+    assert session.paused == 20        # viewfinder released before capture
+
+
 def test_track_empty_without_gps(client):
     j = client.get("/api/track").get_json()
     assert j["fixes"] == []

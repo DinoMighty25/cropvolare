@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 from cropvolare import flightctl, planner
+from cropvolare.camstream import CameraSession
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(REPO, "cropvolare", "gcs_static")
@@ -78,7 +79,7 @@ def _flight_service_active():
 
 def create_app(base=None, fields_dir=None, gps=None,
                start_fn=None, stop_fn=None, config=None,
-               snap_fn=None, flight_service_active_fn=None):
+               snap_fn=None, flight_service_active_fn=None, session=None):
     """App factory; injectable pieces keep it fully testable on the laptop."""
     base = base or flightctl.DEFAULT_BASE
     fields_dir = fields_dir or FIELDS_DIR
@@ -86,6 +87,7 @@ def create_app(base=None, fields_dir=None, gps=None,
     stop_fn = stop_fn or flightctl.stop
     snap_fn = snap_fn or _take_snapshot
     service_active_fn = flight_service_active_fn or _flight_service_active
+    session = session or CameraSession()
     snap_lock = threading.Lock()
     cfg = config if config is not None else _load_config()
     ndvi_cfg = cfg.get("ndvi", {})
@@ -113,6 +115,9 @@ def create_app(base=None, fields_dir=None, gps=None,
     def api_start():
         body = request.get_json(silent=True) or {}
         log = []
+        # hand the camera over: close the viewfinder session and block it from
+        # reopening while the capture process claims the device
+        session.pause_and_close(20)
         rc = start_fn(base, interval=float(body.get("interval", 2.0)),
                       count=0, gps_port=app.config.get("GPS_PORT"),
                       log_fn=log.append, first_frame_timeout=0)
@@ -156,6 +161,54 @@ def create_app(base=None, fields_dir=None, gps=None,
         if img is None:
             return ("no frames yet", 404)
         return _jpeg(img)
+
+    @app.get("/api/stream.mjpg")
+    def api_stream():
+        # live MJPEG viewfinder: one persistent camera session shared by all
+        # viewers, ~2-3 fps. Only when nothing else can want the camera.
+        if flightctl.status_info(base)["capturing"] or service_active_fn():
+            return ("camera busy: capture is running - the preview shows "
+                    "flight frames instead", 409)
+        want_ndvi = request.args.get("ndvi") == "1"
+        try:
+            session.acquire()
+        except RuntimeError as exc:      # paused: capture is taking the camera
+            return (str(exc), 409)
+        except Exception as exc:  # noqa: BLE001 - no camera here (laptop) etc.
+            return (f"camera unavailable: {exc}", 503)
+
+        def gen():
+            import cv2
+            try:
+                while True:
+                    frame = session.frame()
+                    if frame is None:    # session closed: capture took over
+                        break
+                    h, w = frame.shape[:2]
+                    if w > 640:
+                        frame = cv2.resize(frame, (640, int(h * 640 / w)),
+                                           interpolation=cv2.INTER_AREA)
+                    if want_ndvi:
+                        from cropvolare.ndvi import (colorize_ndvi,
+                                                     compute_ndvi_from_image)
+                        frame = colorize_ndvi(compute_ndvi_from_image(
+                            frame, gamma=ndvi_cfg.get("gamma", 0.8),
+                            leakage_k=ndvi_cfg.get("leakage_k", 2.0)))
+                    ok, buf = cv2.imencode(".jpg", frame,
+                                           [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    if not ok:
+                        break
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                           + buf.tobytes() + b"\r\n")
+                    if flightctl.read_meta(base):   # capture started elsewhere
+                        break
+                    time.sleep(0.35)
+            finally:
+                session.release()
+
+        return Response(gen(),
+                        mimetype="multipart/x-mixed-replace; boundary=frame",
+                        headers={"Cache-Control": "no-store"})
 
     @app.get("/api/snapshot.jpg")
     def api_snapshot():

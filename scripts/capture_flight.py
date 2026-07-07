@@ -120,7 +120,16 @@ def main():
                         track_path=os.path.join(args.outdir, "track.csv")).start()
 
     print("initializing camera ...")
-    cam = create_camera()
+    cam = None
+    for attempt in range(3):
+        try:
+            cam = create_camera()
+            break
+        except Exception as exc:  # noqa: BLE001 - e.g. viewfinder still releasing it
+            if attempt == 2:
+                raise
+            print(f"camera busy ({exc}); retrying in 3s ...")
+            time.sleep(3)
     cam.start()
     time.sleep(args.warmup)          # auto-exposure settles on the scene
     exp, gain = lock_exposure(cam)   # then freeze for the whole flight
