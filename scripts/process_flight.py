@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cropvolare import batch, field, fieldmap, report, webmap
+from cropvolare import analyze, batch, field, fieldmap, history, report, webmap
 from cropvolare.ndvi import load_flatfield
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -69,6 +69,11 @@ def main():
                         help="disable flat-field correction")
     parser.add_argument("--no-overlays", action="store_true",
                         help="skip writing a per-photo NDVI overlay for each image")
+    parser.add_argument("--field", default=None,
+                        help="field name: keys flight history for trend analysis")
+    parser.add_argument("--basic", action="store_true",
+                        help="emit the plain gallery/field report instead of the "
+                             "agronomy report (debugging)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -127,27 +132,64 @@ def main():
           f"(healthy {summary['pct_healthy']}% / stressed {summary['pct_stressed']}% "
           f"/ severe {summary['pct_severe']}%)")
 
-    report_path = os.path.join(args.outdir, "report.pdf")
-    if grid.get("empty"):
-        print("  no GPS in photos - building a per-image NDVI gallery (no field map)")
-        report.build_gallery_report(fc, report_path,
-                                    title="Field NDVI Report (no GPS)")
-        print(f"  wrote {report_path}")
-        print("  skipped heatmap.png + map.html (a field map needs geotagged photos)")
-    else:
+    # render heatmap + web map whenever there's GPS (used by both report styles)
+    heatmap_path = None
+    if not grid.get("empty"):
         heatmap_path = os.path.join(args.outdir, "heatmap.png")
         fieldmap.render_grid_png(grid, heatmap_path)
         print(f"  wrote {heatmap_path}")
-
-        report.build_report(fc, grid, cells, problems, summary,
-                            heatmap_path, report_path)
-        print(f"  wrote {report_path}")
-
         map_path = os.path.join(args.outdir, "map.html")
         webmap.build_webmap(fc, grid, cells, problems, heatmap_path,
                             map_path, overlay_opacity=opacity)
         print(f"  wrote {map_path}")
 
+    report_path = os.path.join(args.outdir, "report.pdf")
+
+    if args.basic:
+        if grid.get("empty"):
+            report.build_gallery_report(fc, report_path)
+        else:
+            report.build_report(fc, grid, cells, problems, summary,
+                                heatmap_path, report_path)
+        print(f"  wrote {report_path} (basic)")
+        print("done.")
+        return
+
+    # --- analysis engine -> history -> agronomy report --------------------
+    area_ha = None
+    if not grid.get("empty"):
+        (s, w), (n, e) = grid["bounds"]
+        area_ha = round(abs((n - s) * grid["m_per_deg_lat"]) *
+                        abs((e - w) * grid["m_per_deg_lon"]) / 10000.0, 3)
+
+    flight_id = os.path.basename(os.path.normpath(args.input))
+    result = analyze.analyze(fc, grid=grid if not grid.get("empty") else None,
+                             cells=cells, field=args.field, area_ha=area_ha,
+                             date=now.date().isoformat(), flight_id=flight_id)
+    v = result["verdict"]
+    print(f"analysis: {v['level'].upper()} (score {v['score']}) - {v['line']}")
+    for p in result["patches"][:3]:
+        print(f"  problem #{p['rank']}: {p['area_ha']} ha @ "
+              f"{p['lat']:.5f},{p['lon']:.5f} NDVI {p['mean_ndvi']} - "
+              f"{(p['causes'] or [''])[0]}")
+
+    trend = None
+    if args.field:
+        hist_dir = os.environ.get("CROPVOLARE_HISTORY_DIR",
+                                  history.DEFAULT_HISTORY_DIR)
+        prior = history.previous(args.field, exclude_flight=flight_id,
+                                 history_dir=hist_dir)
+        trend = history.compare(result, prior)
+        history.record_flight(args.field, result, history_dir=hist_dir)
+        if trend:
+            print(f"  trend vs {trend['prev_date']}: {trend['overall']} "
+                  f"(mean NDVI {trend['mean_ndvi_delta']:+})")
+        with open(os.path.join(args.outdir, "analysis.json"), "w") as f:
+            json.dump({"result": result, "trend": trend}, f, indent=2)
+
+    report.build_agronomy_report(result, report_path,
+                                 fieldmap_png=heatmap_path, trend=trend)
+    print(f"  wrote {report_path}")
     print("done.")
 
 

@@ -26,6 +26,38 @@ def run_script(script, *args):
     )
 
 
+# --- agronomy report + history (analysis engine) ---------------------------
+
+def test_process_flight_agronomy_and_trend(geotagged_dir, tmp_path):
+    import shutil
+    pypdf = pytest.importorskip("pypdf")
+    env = dict(os.environ, CROPVOLARE_HISTORY_DIR=str(tmp_path / "history"))
+    # two distinct flight folders of the same field (different flight_id)
+    flight2 = tmp_path / "flight2"
+    shutil.copytree(str(geotagged_dir), str(flight2))
+
+    def run(indir, outdir):
+        return subprocess.run(
+            [sys.executable, os.path.join(REPO_ROOT, "scripts", "process_flight.py"),
+             "--input", str(indir), "--outdir", str(outdir),
+             "--field", "yard", "--no-flatfield"],
+            capture_output=True, text=True, cwd=REPO_ROOT, env=env)
+
+    r1 = run(geotagged_dir, tmp_path / "o1")
+    assert r1.returncode == 0, r1.stderr
+    assert "analysis:" in r1.stdout
+    text = "".join(p.extract_text()
+                   for p in pypdf.PdfReader(str(tmp_path / "o1" / "report.pdf")).pages)
+    assert "Crop Health Report" in text
+    assert "Areas needing attention" in text
+
+    r2 = run(flight2, tmp_path / "o2")           # second flight -> trend section
+    assert r2.returncode == 0, r2.stderr
+    text2 = "".join(p.extract_text()
+                    for p in pypdf.PdfReader(str(tmp_path / "o2" / "report.pdf")).pages)
+    assert "Change over time" in text2
+
+
 # --- process_flight --------------------------------------------------------
 
 def test_process_flight_produces_all_artifacts(geotagged_dir, tmp_path):

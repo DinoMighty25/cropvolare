@@ -228,6 +228,31 @@ python scripts/tag_gps.py --dir flights/today --lat 40.1 --lon -88.2
 
 Then copy `flights/today/` to the laptop and run `process_flight.py` on it.
 
+## Crop health analysis (the farmer report)
+
+`process_flight.py` runs an offline analysis engine (`cropvolare/analyze.py`) over
+the NDVI and writes a farmer-first **agronomy report**: an overall health verdict,
+the ranked problem areas with a first thing to check, a trend vs the last flight, and
+honest methodology caveats. No cloud, no API, fully deterministic.
+
+```bash
+# analyze a flight and key it to a field for trend tracking:
+python scripts/process_flight.py --input flights/today --outdir output/today --field north40
+```
+
+- **Problem areas** — with GPS, contiguous low-NDVI cells are clustered into patches
+  (location, size in ha, severity, suggested cause). Without GPS, the report lists and
+  shows the lowest-NDVI frames instead.
+- **Trends** — `--field NAME` appends each flight to `history/<name>.jsonl`; the next
+  flight's report compares mean NDVI and (with GPS) which patches are new / worsening /
+  improving / resolved. Re-processing the same flight folder updates its record rather
+  than duplicating.
+- `--basic` emits the old plain gallery/field report instead (debugging).
+
+Findings are decision-support to guide ground inspection, never a diagnosis —
+single-camera NoIR NDVI is relative and approximate, and the report states its
+calibration state on every page.
+
 ## Project structure
 
 ```

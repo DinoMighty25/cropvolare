@@ -28,5 +28,12 @@
     "top_n_problems": 5,
     "overlay_opacity": 0.6,
     "write_per_image_overlays": false
+  },
+  "analysis": {
+    "stressed_threshold": 0.3,
+    "severe_threshold": 0.15,
+    "min_patch_cells": 2,
+    "trend_stable_delta": 0.03,
+    "patch_match_radius_m": 30.0
   }
 }
