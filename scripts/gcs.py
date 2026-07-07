@@ -115,7 +115,7 @@ def create_app(base=None, fields_dir=None, gps=None,
         log = []
         rc = start_fn(base, interval=float(body.get("interval", 2.0)),
                       count=0, gps_port=app.config.get("GPS_PORT"),
-                      log_fn=log.append)
+                      log_fn=log.append, first_frame_timeout=0)
         return jsonify({"ok": rc == 0, "log": log}), (200 if rc == 0 else 409)
 
     @app.post("/api/stop")

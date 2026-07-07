@@ -203,7 +203,11 @@ def status_info(base, alive_fn=pid_alive):
 
 
 def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
-          skip_checks=False, log_fn=print):
+          skip_checks=False, log_fn=print, first_frame_timeout=90):
+    """first_frame_timeout: seconds to wait for frame_0000 before reporting
+    failure. The Zero 2 W needs ~30-45 s of process/camera spin-up, so the CLI
+    default is generous. Pass 0 to return right after spawning (the GCS does -
+    its dashboard live-polls the frame counter instead of blocking)."""
     meta = read_meta(base)
     if meta and pid_alive(meta.get("pid")):
         log_fn(f"already capturing -> {meta['dir']} (pid {meta['pid']})")
@@ -249,8 +253,12 @@ def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
                       "interval": interval})
 
     log_fn(f"capture started (pid {proc.pid}) -> {outdir}")
-    log_fn("waiting for the first frame ...")
-    deadline = time.time() + 20
+    if not first_frame_timeout:
+        log_fn("capture starting - first frame takes ~30-45 s on the Pi; "
+               "watch the frame counter")
+        return 0
+    log_fn("waiting for the first frame (~30-45 s on the Pi) ...")
+    deadline = time.time() + first_frame_timeout
     while time.time() < deadline:
         if count_frames(outdir):
             log_fn("first frame saved - CAPTURE CONFIRMED, safe to fly")
