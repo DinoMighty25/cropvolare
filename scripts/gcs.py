@@ -18,7 +18,10 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,13 +45,48 @@ def _load_config(path=DEFAULT_CONFIG):
         return {}
 
 
+def _take_snapshot():
+    """One live frame for the idle viewfinder. Opens the camera, grabs a frame,
+    and RELEASES it completely - the GCS must never hold the camera, or the
+    next capture start would fail."""
+    from cropvolare.ndvi import capture_frame, create_camera
+    cam = create_camera(resolution=(1152, 648))
+    try:
+        cam.start()
+        time.sleep(0.8)  # brief AE settle; viewfinder, not science
+        return capture_frame(cam)
+    finally:
+        try:
+            cam.stop()
+        finally:
+            close = getattr(cam, "close", None)
+            if close:
+                close()
+
+
+def _flight_service_active():
+    """True while the boot-capture systemd unit is running (incl. its ~2 min
+    camera spin-up, when no meta/frames exist yet) - the snapshot viewfinder
+    must stay away from the camera for that whole window."""
+    try:
+        r = subprocess.run(["systemctl", "is-active", "--quiet",
+                            "cropvolare-flight"], timeout=5)
+        return r.returncode == 0
+    except Exception:  # noqa: BLE001 - no systemd (laptop/tests) = not active
+        return False
+
+
 def create_app(base=None, fields_dir=None, gps=None,
-               start_fn=None, stop_fn=None, config=None):
+               start_fn=None, stop_fn=None, config=None,
+               snap_fn=None, flight_service_active_fn=None):
     """App factory; injectable pieces keep it fully testable on the laptop."""
     base = base or flightctl.DEFAULT_BASE
     fields_dir = fields_dir or FIELDS_DIR
     start_fn = start_fn or flightctl.start
     stop_fn = stop_fn or flightctl.stop
+    snap_fn = snap_fn or _take_snapshot
+    service_active_fn = flight_service_active_fn or _flight_service_active
+    snap_lock = threading.Lock()
     cfg = config if config is not None else _load_config()
     ndvi_cfg = cfg.get("ndvi", {})
 
@@ -118,6 +156,25 @@ def create_app(base=None, fields_dir=None, gps=None,
         if img is None:
             return ("no frames yet", 404)
         return _jpeg(img)
+
+    @app.get("/api/snapshot.jpg")
+    def api_snapshot():
+        # live viewfinder - only when nothing else can want the camera
+        if flightctl.status_info(base)["capturing"] or service_active_fn():
+            return ("camera busy: capture is running - the preview shows "
+                    "flight frames instead", 409)
+        with snap_lock:  # serialize concurrent viewfinder requests
+            try:
+                frame = snap_fn()
+            except Exception as exc:  # noqa: BLE001 - no camera here (laptop) etc.
+                return (f"camera unavailable: {exc}", 503)
+        if request.args.get("ndvi") == "1":
+            from cropvolare.ndvi import colorize_ndvi, compute_ndvi_from_image
+            ndvi = compute_ndvi_from_image(
+                frame, gamma=ndvi_cfg.get("gamma", 0.8),
+                leakage_k=ndvi_cfg.get("leakage_k", 2.0))
+            frame = colorize_ndvi(ndvi)
+        return _jpeg(frame)
 
     @app.get("/api/preview_ndvi.jpg")
     def api_preview_ndvi():

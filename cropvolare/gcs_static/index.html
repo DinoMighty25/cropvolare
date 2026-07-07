@@ -61,6 +61,7 @@
       <button id="ndviBtn" onclick="setMode('ndvi')">NDVI</button>
     </div>
     <img id="preview" alt="no frames yet">
+    <div id="previewCap" style="font-size:12px;color:#9ab09a;margin-top:6px;">&mdash;</div>
   </div>
 
   <div class="card">
@@ -70,6 +71,8 @@
 </main>
 <script>
 let mode = 'raw';
+let capturing = false;
+let previewTimer = null;
 function setMode(m) {
   mode = m;
   document.getElementById('rawBtn').classList.toggle('active', m==='raw');
@@ -77,13 +80,41 @@ function setMode(m) {
   refreshPreview();
 }
 function refreshPreview() {
-  const url = (mode==='raw' ? '/api/preview.jpg' : '/api/preview_ndvi.jpg')
-              + '?t=' + Date.now();
-  document.getElementById('preview').src = url;
+  // capturing: show the newest saved flight frame (near-live, no camera use).
+  // idle: live viewfinder snapshots - the server opens+releases the camera
+  // per shot, so each request takes a few seconds on the Pi.
+  clearTimeout(previewTimer);
+  let url, caption;
+  if (capturing) {
+    url = (mode==='raw' ? '/api/preview.jpg' : '/api/preview_ndvi.jpg');
+    caption = 'latest flight frame';
+  } else {
+    url = '/api/snapshot.jpg' + (mode==='ndvi' ? '?ndvi=1' : '');
+    caption = 'LIVE viewfinder (idle)';
+  }
+  url += (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  const img = document.getElementById('preview');
+  const schedule = () => {
+    previewTimer = setTimeout(refreshPreview, capturing ? 2500 : 1200);
+  };
+  img.onload = () => {
+    document.getElementById('previewCap').textContent = caption;
+    schedule();
+  };
+  img.onerror = () => {
+    document.getElementById('previewCap').textContent =
+      capturing ? 'no frames yet' : 'viewfinder unavailable';
+    previewTimer = setTimeout(refreshPreview, 4000);
+  };
+  img.src = url;
 }
 async function refreshStatus() {
   try {
     const s = await (await fetch('/api/status')).json();
+    if (s.capturing !== capturing) {   // mode changed: re-aim the preview
+      capturing = s.capturing;
+      refreshPreview();
+    }
     const b = document.getElementById('capBadge');
     b.textContent = s.capturing ? 'CAPTURING' : 'stopped';
     b.className = 'badge ' + (s.capturing ? 'on' : 'off');
@@ -125,7 +156,7 @@ async function doStop() {
 refreshStatus(); refreshFlights(); refreshPreview();
 setInterval(refreshStatus, 2000);
 setInterval(refreshFlights, 10000);
-setInterval(refreshPreview, 5000);
+// preview refresh is self-scheduling (see refreshPreview)
 </script>
 </body>
 </html>
