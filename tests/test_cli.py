@@ -188,7 +188,8 @@ def test_calibrate_flatfield_builds_and_writes(tmp_path):
     assert "corner/center gain ratio" in result.stdout
     assert os.path.exists(gain_out)
     cfg = json.loads(cfg_path.read_text())
-    assert cfg["calibration"]["flatfield_path"] == gain_out
+    # written with forward slashes - the config is shared with the Pi
+    assert cfg["calibration"]["flatfield_path"] == gain_out.replace("\\", "/")
 
 
 def test_process_flight_applies_flatfield(geotagged_dir, tmp_path):
