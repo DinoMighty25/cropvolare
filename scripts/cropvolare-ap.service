@@ -1,0 +1,23 @@
+# CropVolare AP fallback: no known WiFi ~75s after boot -> the Pi broadcasts
+# its own "CropVolare" network so the phone GCS works anywhere.
+#
+# Requires the AP profile to exist once (see README "No hotspot needed"), then:
+#   sudo cp scripts/cropvolare-ap.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable cropvolare-ap
+#
+# At home nothing changes (the Pi joins home WiFi first). At the field, connect
+# the phone to WiFi "CropVolare" and open http://10.42.0.1:8080
+
+[Unit]
+Description=CropVolare access-point fallback
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/dinomighty/cropvolare/scripts/ap_fallback.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -151,6 +151,27 @@ Then from your phone (hotspot): **`http://<pi-ip>:8080`**
 
 No authentication — hotspot/LAN use only.
 
+**No hotspot needed (field AP mode).** With the fallback installed, the Pi
+broadcasts its own WiFi when it can't find a known network ~75s after boot —
+i.e. automatically, exactly when you're in a field. Connect the phone to WiFi
+**`CropVolare`** and open **`http://10.42.0.1:8080`**. At home nothing changes
+(the Pi joins home WiFi first; the AP profile never autoconnects on its own).
+One-time setup on the Pi:
+
+```bash
+sudo nmcli connection add type wifi ifname wlan0 con-name cropvolare-ap \
+    autoconnect no ssid CropVolare
+sudo nmcli connection modify cropvolare-ap 802-11-wireless.mode ap \
+    802-11-wireless.band bg ipv4.method shared \
+    wifi-sec.key-mgmt wpa-psk wifi-sec.psk "cropvolare"
+sudo cp scripts/cropvolare-ap.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable cropvolare-ap
+```
+
+Phones keep using cellular for internet while connected to the Pi's AP, so
+the planner's satellite tiles still load if you have signal (and the pages
+themselves work fully offline).
+
 ### Field workflow (fly day)
 
 Everything you do at the field, in order:
