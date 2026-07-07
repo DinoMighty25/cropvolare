@@ -269,3 +269,170 @@ def build_gallery_report(feature_collection, out_path,
     finally:
         import shutil
         shutil.rmtree(thumb_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# agronomy report - farmer-first, driven by the analysis engine
+# --------------------------------------------------------------------------
+
+_LEVEL_LABEL = {"strong": "STRONG", "fair": "FAIR", "poor": "POOR",
+                "critical": "CRITICAL", "unknown": "UNKNOWN"}
+
+
+def _trend_sentence(trend):
+    d = trend.get("mean_ndvi_delta")
+    if d is None:
+        return "Change vs last flight: not comparable."
+    arrow = {"improving": "up", "declining": "down", "stable": "unchanged"}.get(
+        trend["overall"], "")
+    return (f"Vs last flight ({trend.get('prev_date')}): field NDVI {arrow} "
+            f"{d:+.3f} ({trend['overall']}).")
+
+
+def build_agronomy_report(result, out_path, fieldmap_png=None, trend=None):
+    """Farmer-facing PDF from an AnalysisResult (+ optional trend/heatmap).
+
+    Leads with a plain verdict, then the problem-area table (the actionable
+    part), the trend vs last flight, the map/frames, and honest methodology.
+    """
+    dist = result.get("distribution", {})
+    verdict = result.get("verdict", {})
+    cal = result.get("calibration", {})
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+
+    # header + verdict
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "Crop Health Report", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    area = (f"{result['area_ha']:.2f} ha" if result.get("area_ha")
+            else "area n/a (no GPS)")
+    pdf.cell(0, 6, f"Field: {result.get('field') or 'unnamed'}    "
+                   f"Date: {result.get('date') or 'unknown'}    "
+                   f"Scanned: {area}    Images: {result.get('n_frames', 0)}",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 9, f"Overall: {_LEVEL_LABEL.get(verdict.get('level'), '?')} "
+                   f"(score {verdict.get('score', 0)}/100)",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 6, verdict.get("line", ""))
+    pdf.ln(2)
+
+    # health summary
+    if dist.get("mean") is not None:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Field health", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 6, f"Mean NDVI {dist['mean']}    "
+                       f"Healthy {dist['pct_healthy']}%   "
+                       f"Moderate {dist['pct_moderate']}%   "
+                       f"Stressed {dist['pct_stressed']}%   "
+                       f"Severe {dist['pct_severe']}%",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+    # trend
+    if trend:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Change over time", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 11)
+        pdf.multi_cell(0, 6, _trend_sentence(trend))
+        if trend.get("spatial"):
+            pdf.cell(0, 6, f"Problem areas - new: {len(trend['new'])}, "
+                           f"worsened: {len(trend['worsened'])}, "
+                           f"improved: {len(trend['improved'])}, "
+                           f"resolved: {len(trend['resolved'])}",
+                     new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+    # problem areas (the actionable table)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Areas needing attention", new_x="LMARGIN", new_y="NEXT")
+    patches = result.get("patches", [])
+    if patches:
+        pdf.set_font("Helvetica", "B", 9)
+        widths = (10, 44, 22, 20, 84)
+        for wd, hd in zip(widths, ("#", "Location", "Size (ha)", "NDVI",
+                                   "First thing to check")):
+            pdf.cell(wd, 7, hd, border=1)
+        pdf.ln()
+        pdf.set_font("Helvetica", "", 8)
+        for p in patches[:8]:
+            cause = (p.get("causes") or ["inspect on the ground"])[0]
+            if len(cause) > 62:
+                cause = cause[:59] + "..."
+            loc = f"{p['lat']:.5f},{p['lon']:.5f}"
+            cells = [(widths[0], str(p["rank"])), (widths[1], loc),
+                     (widths[2], f"{p['area_ha']:.3f}"),
+                     (widths[3], f"{p['mean_ndvi']:.2f}"), (widths[4], cause)]
+            row_h = 5 * max(1, (len(cause) // 42) + 1)
+            y0 = pdf.get_y()
+            x0 = pdf.get_x()
+            for wd, val in cells:
+                x = pdf.get_x()
+                pdf.multi_cell(wd, 5, val, border=1,
+                               new_x="RIGHT", new_y="TOP", max_line_height=5)
+                pdf.set_xy(x + wd, y0)
+            pdf.set_xy(x0, y0 + row_h)
+    elif result.get("scope") == "gallery":
+        pdf.set_font("Helvetica", "", 11)
+        pdf.multi_cell(0, 6, "No GPS on these photos, so problem areas can't be "
+                             "mapped. Lowest-NDVI frames (inspect what they show):")
+        worst = result.get("worst_frames", [])[:6]
+        thumb_dir = tempfile.mkdtemp(prefix="cropvolare_agro_")
+        try:
+            cols, cw = 3, (210 - 20) / 3
+            tw = cw - 4
+            x0, y = 10, pdf.get_y() + 2
+            for r in range(0, len(worst), cols):
+                if y + tw + 10 > 285:
+                    pdf.add_page(); y = 15
+                for ci, wf in enumerate(worst[r:r + cols]):
+                    x = x0 + ci * cw
+                    ov = wf.get("overlay_png")
+                    if ov and os.path.exists(ov):
+                        try:
+                            pdf.image(_thumbnail(ov, thumb_dir), x=x + 2, y=y, w=tw)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    pdf.set_xy(x + 2, y + tw + 1)
+                    pdf.set_font("Helvetica", "", 7)
+                    pdf.multi_cell(tw, 3,
+                                   f"{wf['filename']}\nNDVI {wf['mean_ndvi']}",
+                                   align="C")
+                y += tw + 10
+            pdf.set_y(y)
+        finally:
+            import shutil
+            shutil.rmtree(thumb_dir, ignore_errors=True)
+    else:
+        pdf.set_font("Helvetica", "I", 11)
+        pdf.cell(0, 7, "No distinct problem areas detected.",
+                 new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    # map
+    if fieldmap_png and os.path.exists(fieldmap_png):
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Field map (red = low NDVI)", new_x="LMARGIN", new_y="NEXT")
+        try:
+            pdf.image(fieldmap_png, w=180)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # methodology / caveats
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "I", 8)
+    ff = "on" if cal.get("flatfield") else "OFF"
+    pdf.multi_cell(0, 4,
+        "Method: single-camera NoIR NDVI (relative, approximate). "
+        f"Calibration - flat-field: {ff}, leakage_k: {cal.get('leakage_k')}, "
+        f"blur filter: {cal.get('min_sharpness')}. "
+        "Findings are decision-support to guide ground inspection, not a "
+        "diagnosis. Verify problem areas in person before acting.")
+
+    pdf.output(out_path)
