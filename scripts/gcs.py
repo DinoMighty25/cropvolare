@@ -46,25 +46,6 @@ def _load_config(path=DEFAULT_CONFIG):
         return {}
 
 
-def _take_snapshot():
-    """One live frame for the idle viewfinder. Opens the camera, grabs a frame,
-    and RELEASES it completely - the GCS must never hold the camera, or the
-    next capture start would fail."""
-    from cropvolare.ndvi import capture_frame, create_camera
-    cam = create_camera(resolution=(1152, 648))
-    try:
-        cam.start()
-        time.sleep(0.8)  # brief AE settle; viewfinder, not science
-        return capture_frame(cam)
-    finally:
-        try:
-            cam.stop()
-        finally:
-            close = getattr(cam, "close", None)
-            if close:
-                close()
-
-
 def _flight_service_active():
     """True while the boot-capture systemd unit is running (incl. its ~2 min
     camera spin-up, when no meta/frames exist yet) - the snapshot viewfinder
@@ -79,16 +60,21 @@ def _flight_service_active():
 
 def create_app(base=None, fields_dir=None, gps=None,
                start_fn=None, stop_fn=None, config=None,
-               snap_fn=None, flight_service_active_fn=None, session=None):
-    """App factory; injectable pieces keep it fully testable on the laptop."""
+               flight_service_active_fn=None, session=None,
+               snapshot_wait=12.0):
+    """App factory; injectable pieces keep it fully testable on the laptop.
+
+    ONE RULE ABOVE ALL: only the CameraSession worker may ever open the
+    camera. Snapshot and stream both read its buffer - competing openers
+    (the first snapshot design) thrash libcamera into a stuck 'Running
+    state' that only a process restart clears.
+    """
     base = base or flightctl.DEFAULT_BASE
     fields_dir = fields_dir or FIELDS_DIR
     start_fn = start_fn or flightctl.start
     stop_fn = stop_fn or flightctl.stop
-    snap_fn = snap_fn or _take_snapshot
     service_active_fn = flight_service_active_fn or _flight_service_active
     session = session or CameraSession()
-    snap_lock = threading.Lock()
     cfg = config if config is not None else _load_config()
     ndvi_cfg = cfg.get("ndvi", {})
 
@@ -109,6 +95,7 @@ def create_app(base=None, fields_dir=None, gps=None,
     def api_status():
         info = flightctl.status_info(base)
         info["gps"] = state["gps"].latest() if state["gps"] else None
+        info["viewfinder"] = session.info()
         return jsonify(info)
 
     @app.post("/api/start")
@@ -182,8 +169,11 @@ def create_app(base=None, fields_dir=None, gps=None,
             had_frame = False
             warmup_deadline = time.time() + 45
             while True:
-                if session.paused or flightctl.read_meta(base):
+                meta = flightctl.read_meta(base)
+                capture_live = meta and flightctl.pid_alive(meta.get("pid"))
+                if session.paused or capture_live:
                     break                # capture started - hand over
+                    # (stale meta from a killed capture must NOT end streams)
                 frame = session.get_frame()
                 if frame is None:
                     if had_frame or time.time() > warmup_deadline:
@@ -215,15 +205,23 @@ def create_app(base=None, fields_dir=None, gps=None,
 
     @app.get("/api/snapshot.jpg")
     def api_snapshot():
-        # live viewfinder - only when nothing else can want the camera
+        # single still from the SAME session buffer as the stream - never a
+        # second camera opener (old cached dashboards keep polling this)
         if flightctl.status_info(base)["capturing"] or service_active_fn():
             return ("camera busy: capture is running - the preview shows "
                     "flight frames instead", 409)
-        with snap_lock:  # serialize concurrent viewfinder requests
-            try:
-                frame = snap_fn()
-            except Exception as exc:  # noqa: BLE001 - no camera here (laptop) etc.
-                return (f"camera unavailable: {exc}", 503)
+        if session.paused:
+            return ("camera reserved for capture", 409)
+        deadline = time.time() + snapshot_wait
+        frame = session.get_frame()
+        while frame is None and time.time() < deadline:
+            if session.paused:
+                return ("camera reserved for capture", 409)
+            time.sleep(0.3)
+            frame = session.get_frame()
+        if frame is None:
+            err = session.info().get("last_error") or "camera not warmed up"
+            return (f"camera unavailable: {err}", 503)
         if request.args.get("ndvi") == "1":
             from cropvolare.ndvi import colorize_ndvi, compute_ndvi_from_image
             ndvi = compute_ndvi_from_image(

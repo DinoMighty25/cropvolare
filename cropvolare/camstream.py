@@ -26,7 +26,7 @@ class CameraSession:
     """
 
     def __init__(self, camera_factory=None, resolution=(1152, 648),
-                 warmup=0.8, idle_timeout=10.0, fail_cooldown=5.0,
+                 warmup=0.8, idle_timeout=10.0, fail_cooldown=8.0,
                  time_fn=time.time):
         self._factory = camera_factory
         self._resolution = resolution
@@ -41,6 +41,8 @@ class CameraSession:
         self._fail_until = 0.0
         self._worker = None
         self._stop_evt = threading.Event()
+        self._last_error = None
+        self._frames_captured = 0
 
     def _default_factory(self):
         from .ndvi import create_camera
@@ -55,6 +57,19 @@ class CameraSession:
     def running(self):
         with self._lock:
             return self._worker is not None and self._worker.is_alive()
+
+    def info(self):
+        """Diagnostics for /api/status - never guess at viewfinder state."""
+        with self._lock:
+            now = self._time()
+            return {
+                "running": self._worker is not None and self._worker.is_alive(),
+                "warmed": self._frame is not None,
+                "paused": now < self._pause_until,
+                "cooling_down": now < self._fail_until,
+                "frames_captured": self._frames_captured,
+                "last_error": self._last_error,
+            }
 
     def get_frame(self):
         """Latest BGR frame, or None while warming up / paused / failed.
@@ -83,15 +98,19 @@ class CameraSession:
         except Exception as exc:  # noqa: BLE001 - camera missing/busy
             print(f"viewfinder: camera unavailable: {exc}")
             with self._lock:
+                self._last_error = str(exc)
                 self._fail_until = self._time() + self._fail_cooldown
                 self._worker = None
             return
         try:
             from .ndvi import capture_frame
+            with self._lock:
+                self._last_error = None
             while not stop_evt.is_set():
                 frame = capture_frame(cam)
                 with self._lock:
                     self._frame = frame
+                    self._frames_captured += 1
                     now = self._time()
                     done = (now < self._pause_until
                             or now - self._last_use > self._idle_timeout)
@@ -100,6 +119,9 @@ class CameraSession:
                 stop_evt.wait(0.15)
         except Exception as exc:  # noqa: BLE001 - camera died mid-stream
             print(f"viewfinder: camera error: {exc}")
+            with self._lock:
+                self._last_error = str(exc)
+                self._fail_until = self._time() + self._fail_cooldown
         finally:
             try:
                 cam.stop()

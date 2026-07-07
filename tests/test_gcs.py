@@ -129,20 +129,20 @@ def test_export_kml_and_litchi(client):
     assert client.get("/api/export?field=nope&fmt=kml").status_code == 404
 
 
-def _snap_app(tmp_path, snap_fn, service_active=False):
+def _snap_app(tmp_path, session, service_active=False):
     app = gcs.create_app(base=str(tmp_path / "flights"),
                          fields_dir=str(tmp_path / "fields"),
-                         snap_fn=snap_fn,
+                         session=session,
                          flight_service_active_fn=lambda: service_active,
-                         config={"ndvi": {"gamma": 0.8, "leakage_k": 2.0}})
+                         config={"ndvi": {"gamma": 0.8, "leakage_k": 2.0}},
+                         snapshot_wait=0.2)
     app.testing = True
     return app.test_client()
 
 
-def test_snapshot_serves_live_frame(tmp_path):
-    frame = np.zeros((48, 64, 3), np.uint8)
-    frame[:, :, 0] = 180
-    c = _snap_app(tmp_path, snap_fn=lambda: frame)
+def test_snapshot_serves_from_session_buffer(tmp_path):
+    # snapshot reads the SAME session as the stream - never its own camera
+    c = _snap_app(tmp_path, _FakeSession(n_frames=5))
     r = c.get("/api/snapshot.jpg")
     assert r.status_code == 200
     assert r.data[:2] == b"\xff\xd8"
@@ -154,17 +154,26 @@ def test_snapshot_serves_live_frame(tmp_path):
 def test_snapshot_refused_while_flight_service_runs(tmp_path):
     # boot spin-up window: service active but no frames yet - camera is
     # spoken for, the viewfinder must not touch it
-    c = _snap_app(tmp_path, snap_fn=lambda: None, service_active=True)
+    c = _snap_app(tmp_path, _FakeSession(), service_active=True)
     assert c.get("/api/snapshot.jpg").status_code == 409
 
 
-def test_snapshot_503_without_camera(tmp_path):
-    def boom():
-        raise RuntimeError("picamera2 not installed")
-    c = _snap_app(tmp_path, snap_fn=boom)
+def test_snapshot_503_when_camera_never_warms(tmp_path):
+    session = _FakeSession(n_frames=0)
+    session.info = lambda: {"last_error": "picamera2 not installed"}
+    c = _snap_app(tmp_path, session)
     r = c.get("/api/snapshot.jpg")
     assert r.status_code == 503
     assert b"camera unavailable" in r.data
+
+
+def test_status_reports_viewfinder(tmp_path):
+    session = _FakeSession()
+    session.info = lambda: {"running": True, "warmed": True,
+                            "frames_captured": 7, "last_error": None}
+    c = _snap_app(tmp_path, session)
+    s = c.get("/api/status").get_json()
+    assert s["viewfinder"]["frames_captured"] == 7
 
 
 class _FakeSession:
@@ -186,6 +195,11 @@ class _FakeSession:
     def pause_and_close(self, seconds=20):
         self.pause_called = seconds
         self.paused = True
+
+    def info(self):
+        return {"running": self.n > 0, "warmed": self.n > 0,
+                "paused": self.paused, "frames_captured": 0,
+                "last_error": None}
 
 
 def _stream_app(tmp_path, session, service_active=False, start_fn=None):
