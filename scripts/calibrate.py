@@ -78,10 +78,10 @@ def run_leakage(args):
 
 
 def run_flatfield(args):
-    paths = sorted(
+    paths = sorted({
         p for pat in ("*.jpg", "*.jpeg", "*.JPG", "*.png")
         for p in glob.glob(os.path.join(args.flatfield_dir, pat))
-    )
+    })  # set: Windows globs are case-insensitive, *.jpg and *.JPG both match
     if not paths:
         raise SystemExit(f"no images found in {args.flatfield_dir}")
     print(f"building flat-field from {len(paths)} frame(s) ...")
@@ -101,8 +101,9 @@ def run_flatfield(args):
     print(f"saved gain map to {gain_out}")
 
     if args.write:
+        # forward slashes: the config is shared across Windows and the Pi
         _update_config(args.config, "calibration", "flatfield_path",
-                       args.gain_out)
+                       args.gain_out.replace("\\", "/"))
         print(f"wrote calibration.flatfield_path to {args.config}")
     else:
         print("(re-run with --write to record it in the config)")

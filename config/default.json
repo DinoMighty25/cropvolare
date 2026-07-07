@@ -1,8 +1,14 @@
 {
   "camera": {
-    "resolution": [2304, 1296],
+    "resolution": [
+      2304,
+      1296
+    ],
     "format": "RGB888",
-    "colour_gains": [0.88, 0.97]
+    "colour_gains": [
+      0.88,
+      0.97
+    ]
   },
   "ndvi": {
     "gamma": 0.8,
@@ -13,7 +19,12 @@
   },
   "calibration": {
     "flatfield_path": "calibration/gain.npy",
-    "ref_roi": [0, 0, 50, 50],
+    "ref_roi": [
+      0,
+      0,
+      50,
+      50
+    ],
     "known_nir_reflectance": 0.5,
     "known_red_reflectance": 0.5
   },
