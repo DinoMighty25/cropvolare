@@ -1,17 +1,17 @@
 """
 Shared live-view camera session for the GCS viewfinder.
 
-The old per-snapshot approach opened and closed the camera for every preview
-frame (~3-4 s each on a Zero 2 W - the "finicky feed"). This keeps ONE camera
-session open while at least one viewfinder stream is watching, so frames cost
-a capture_array call instead of a full pipeline setup, and closes it the
-moment the last viewer leaves.
+Design: a BACKGROUND WORKER THREAD owns the camera and keeps the latest frame
+in a buffer; stream requests only read the buffer. Requests never own the
+camera, so an aborted/vanished client (phone hops WiFi, curl times out) can't
+leak it - the first per-request-refcount version did exactly that, leaving the
+camera stuck in "Running state" until a service restart. An idle watchdog
+closes the camera when nobody has asked for a frame in idle_timeout seconds.
 
 Safety property (non-negotiable): the session must never hold the camera when
-a flight capture wants it. pause_and_close() releases the camera immediately
-and blocks re-opening for a grace window - the GCS start endpoint calls it
-before spawning capture, and in-flight stream generators see frame() -> None
-and end themselves.
+a flight capture wants it. pause_and_close() stops the worker, releases the
+camera, and blocks re-opening for a grace window - the GCS start endpoint
+calls it before spawning capture.
 """
 
 import threading
@@ -19,58 +19,97 @@ import time
 
 
 class CameraSession:
-    """Refcounted camera holder for viewfinder streams.
+    """Latest-frame buffer backed by a self-managing camera worker thread.
 
     camera_factory/time_fn are injectable for hardware-free tests. The real
     factory builds ndvi.create_camera at a preview-friendly resolution.
     """
 
     def __init__(self, camera_factory=None, resolution=(1152, 648),
-                 warmup=0.8, time_fn=time.time):
+                 warmup=0.8, idle_timeout=10.0, fail_cooldown=5.0,
+                 time_fn=time.time):
         self._factory = camera_factory
         self._resolution = resolution
         self._warmup = warmup
+        self._idle_timeout = idle_timeout
+        self._fail_cooldown = fail_cooldown
         self._time = time_fn
-        self._lock = threading.RLock()
-        self._cam = None
-        self._clients = 0
+        self._lock = threading.Lock()
+        self._frame = None
+        self._last_use = 0.0
         self._pause_until = 0.0
+        self._fail_until = 0.0
+        self._worker = None
+        self._stop_evt = threading.Event()
 
     def _default_factory(self):
         from .ndvi import create_camera
         return create_camera(resolution=self._resolution)
 
-    def acquire(self):
-        """Register a viewer; opens the camera on the first one.
+    @property
+    def paused(self):
+        with self._lock:
+            return self._time() < self._pause_until
 
-        Raises RuntimeError while paused (capture owns/is taking the camera).
+    @property
+    def running(self):
+        with self._lock:
+            return self._worker is not None and self._worker.is_alive()
+
+    def get_frame(self):
+        """Latest BGR frame, or None while warming up / paused / failed.
+
+        Calling this marks the session as in-use (feeds the idle watchdog) and
+        lazily starts the camera worker. Never blocks on the camera.
         """
         with self._lock:
-            if self._time() < self._pause_until:
-                raise RuntimeError("camera reserved for capture")
-            if self._cam is None:
-                factory = self._factory or self._default_factory
-                cam = factory()
-                cam.start()
-                time.sleep(self._warmup)
-                self._cam = cam
-            self._clients += 1
-
-    def release(self):
-        """Unregister a viewer; closes the camera when the last one leaves."""
-        with self._lock:
-            self._clients = max(0, self._clients - 1)
-            if self._clients == 0:
-                self._close_locked()
-
-    def frame(self):
-        """One BGR frame, or None if the session is closed/paused (viewer
-        generators treat None as 'stop streaming now')."""
-        with self._lock:
-            if self._cam is None or self._time() < self._pause_until:
+            now = self._time()
+            if now < self._pause_until or now < self._fail_until:
                 return None
+            self._last_use = now
+            if self._worker is None or not self._worker.is_alive():
+                self._stop_evt = threading.Event()
+                self._worker = threading.Thread(
+                    target=self._run, args=(self._stop_evt,), daemon=True)
+                self._worker.start()
+            return self._frame
+
+    def _run(self, stop_evt):
+        try:
+            factory = self._factory or self._default_factory
+            cam = factory()
+            cam.start()
+            time.sleep(self._warmup)
+        except Exception as exc:  # noqa: BLE001 - camera missing/busy
+            print(f"viewfinder: camera unavailable: {exc}")
+            with self._lock:
+                self._fail_until = self._time() + self._fail_cooldown
+                self._worker = None
+            return
+        try:
             from .ndvi import capture_frame
-            return capture_frame(self._cam)
+            while not stop_evt.is_set():
+                frame = capture_frame(cam)
+                with self._lock:
+                    self._frame = frame
+                    now = self._time()
+                    done = (now < self._pause_until
+                            or now - self._last_use > self._idle_timeout)
+                if done:
+                    break
+                stop_evt.wait(0.15)
+        except Exception as exc:  # noqa: BLE001 - camera died mid-stream
+            print(f"viewfinder: camera error: {exc}")
+        finally:
+            try:
+                cam.stop()
+            finally:
+                close = getattr(cam, "close", None)
+                if close:
+                    close()
+            with self._lock:
+                self._frame = None
+                self._worker = None
 
     def pause_and_close(self, seconds=20.0):
         """Release the camera NOW and refuse to reopen for `seconds`.
@@ -81,19 +120,7 @@ class CameraSession:
         """
         with self._lock:
             self._pause_until = self._time() + seconds
-            self._close_locked()
-
-    def _close_locked(self):
-        cam, self._cam = self._cam, None
-        if cam is not None:
-            try:
-                cam.stop()
-            finally:
-                close = getattr(cam, "close", None)
-                if close:
-                    close()
-
-    @property
-    def open(self):
-        with self._lock:
-            return self._cam is not None
+            evt, worker = self._stop_evt, self._worker
+        if worker is not None and worker.is_alive():
+            evt.set()
+            worker.join(timeout=10)

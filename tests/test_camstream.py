@@ -1,7 +1,8 @@
-"""CameraSession tests - fake camera, injected clock, no hardware."""
+"""CameraSession tests - fake camera, real (tiny) threads, no hardware."""
+
+import time
 
 import numpy as np
-import pytest
 
 from cropvolare.camstream import CameraSession
 
@@ -25,40 +26,61 @@ class _FakeCam:
         return arr
 
 
-def _session(log, now):
-    return CameraSession(camera_factory=lambda: _FakeCam(log),
-                         warmup=0, time_fn=lambda: now[0])
+def _wait_for(predicate, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
 
 
-def test_one_camera_shared_by_viewers():
-    log, now = [], [100.0]
-    s = _session(log, now)
-    s.acquire()
-    s.acquire()                       # second viewer: no second open
+def test_worker_produces_frames_and_idle_closes():
+    log = []
+    s = CameraSession(camera_factory=lambda: _FakeCam(log), warmup=0,
+                      idle_timeout=0.3)
+    assert s.get_frame() is None            # first call: worker starting
+    assert _wait_for(lambda: s.get_frame() is not None)
     assert log.count("start") == 1
-    assert s.frame() is not None
-    s.release()
-    assert s.open                     # one viewer still watching
-    s.release()
-    assert not s.open                 # last viewer left -> camera closed
+    # stop asking for frames -> idle watchdog closes the camera
+    assert _wait_for(lambda: not s.running)
     assert "stop" in log and "close" in log
 
 
 def test_pause_and_close_hands_camera_over():
-    log, now = [], [100.0]
-    s = _session(log, now)
-    s.acquire()
-    s.pause_and_close(seconds=20)
-    assert not s.open
-    assert s.frame() is None          # streaming generators see this and end
-    with pytest.raises(RuntimeError):
-        s.acquire()                   # no reopening during the grace window
-    now[0] = 121.0                    # window over (capture guard takes over)
-    s.acquire()
-    assert s.frame() is not None
+    log = []
+    s = CameraSession(camera_factory=lambda: _FakeCam(log), warmup=0,
+                      idle_timeout=5.0)
+    s.get_frame()
+    assert _wait_for(lambda: s.get_frame() is not None)
+    s.pause_and_close(seconds=1.0)
+    assert not s.running                    # worker joined, camera released
+    assert "close" in log
+    assert s.paused
+    assert s.get_frame() is None            # no reopening during the window
+    assert log.count("start") == 1
+    time.sleep(1.1)                         # window over
+    assert not s.paused
+    s.get_frame()
+    assert _wait_for(lambda: s.get_frame() is not None)
+    assert log.count("start") == 2
 
 
-def test_frame_none_when_never_opened():
-    log, now = [], [100.0]
-    s = _session(log, now)
-    assert s.frame() is None
+def test_failed_open_backs_off():
+    calls = []
+
+    def bad_factory():
+        calls.append(1)
+        raise RuntimeError("no camera here")
+
+    s = CameraSession(camera_factory=bad_factory, warmup=0,
+                      fail_cooldown=0.4)
+    assert s.get_frame() is None
+    assert _wait_for(lambda: not s.running)
+    # hammering get_frame during the cooldown must not respawn workers
+    for _ in range(10):
+        assert s.get_frame() is None
+    assert len(calls) == 1
+    time.sleep(0.5)                         # cooldown over -> one retry
+    s.get_frame()
+    assert _wait_for(lambda: len(calls) == 2)

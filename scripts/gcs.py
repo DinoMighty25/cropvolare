@@ -169,42 +169,45 @@ def create_app(base=None, fields_dir=None, gps=None,
         if flightctl.status_info(base)["capturing"] or service_active_fn():
             return ("camera busy: capture is running - the preview shows "
                     "flight frames instead", 409)
+        if session.paused:               # capture is taking the camera
+            return ("camera reserved for capture", 409)
         want_ndvi = request.args.get("ndvi") == "1"
-        try:
-            session.acquire()
-        except RuntimeError as exc:      # paused: capture is taking the camera
-            return (str(exc), 409)
-        except Exception as exc:  # noqa: BLE001 - no camera here (laptop) etc.
-            return (f"camera unavailable: {exc}", 503)
 
         def gen():
+            # requests never own the camera: they read the session's latest-
+            # frame buffer, so a vanished client can't leak anything. None
+            # before any frame = warming up (wait, bounded); None after
+            # frames flowed = camera closed/paused (end the stream).
             import cv2
-            try:
-                while True:
-                    frame = session.frame()
-                    if frame is None:    # session closed: capture took over
+            had_frame = False
+            warmup_deadline = time.time() + 45
+            while True:
+                if session.paused or flightctl.read_meta(base):
+                    break                # capture started - hand over
+                frame = session.get_frame()
+                if frame is None:
+                    if had_frame or time.time() > warmup_deadline:
                         break
-                    h, w = frame.shape[:2]
-                    if w > 640:
-                        frame = cv2.resize(frame, (640, int(h * 640 / w)),
-                                           interpolation=cv2.INTER_AREA)
-                    if want_ndvi:
-                        from cropvolare.ndvi import (colorize_ndvi,
-                                                     compute_ndvi_from_image)
-                        frame = colorize_ndvi(compute_ndvi_from_image(
-                            frame, gamma=ndvi_cfg.get("gamma", 0.8),
-                            leakage_k=ndvi_cfg.get("leakage_k", 2.0)))
-                    ok, buf = cv2.imencode(".jpg", frame,
-                                           [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    if not ok:
-                        break
-                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-                           + buf.tobytes() + b"\r\n")
-                    if flightctl.read_meta(base):   # capture started elsewhere
-                        break
-                    time.sleep(0.35)
-            finally:
-                session.release()
+                    time.sleep(0.3)
+                    continue
+                had_frame = True
+                h, w = frame.shape[:2]
+                if w > 640:
+                    frame = cv2.resize(frame, (640, int(h * 640 / w)),
+                                       interpolation=cv2.INTER_AREA)
+                if want_ndvi:
+                    from cropvolare.ndvi import (colorize_ndvi,
+                                                 compute_ndvi_from_image)
+                    frame = colorize_ndvi(compute_ndvi_from_image(
+                        frame, gamma=ndvi_cfg.get("gamma", 0.8),
+                        leakage_k=ndvi_cfg.get("leakage_k", 2.0)))
+                ok, buf = cv2.imencode(".jpg", frame,
+                                       [cv2.IMWRITE_JPEG_QUALITY, 75])
+                if not ok:
+                    break
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                       + buf.tobytes() + b"\r\n")
+                time.sleep(0.35)
 
         return Response(gen(),
                         mimetype="multipart/x-mixed-replace; boundary=frame",

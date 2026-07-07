@@ -170,28 +170,22 @@ def test_snapshot_503_without_camera(tmp_path):
 class _FakeSession:
     """Stands in for CameraSession: serves N frames then reports closed."""
 
-    def __init__(self, n_frames=2):
+    def __init__(self, n_frames=2, paused=False):
         self.n = n_frames
-        self.acquired = 0
-        self.released = 0
-        self.paused = None
+        self.paused = paused
+        self.pause_called = None
 
-    def acquire(self):
-        self.acquired += 1
-
-    def release(self):
-        self.released += 1
-
-    def frame(self):
+    def get_frame(self):
         if self.n <= 0:
-            return None
+            return None            # camera closed -> stream should end
         self.n -= 1
         arr = np.zeros((48, 64, 3), np.uint8)
         arr[:, :, 0] = 150
         return arr
 
     def pause_and_close(self, seconds=20):
-        self.paused = seconds
+        self.pause_called = seconds
+        self.paused = True
 
 
 def _stream_app(tmp_path, session, service_active=False, start_fn=None):
@@ -206,7 +200,7 @@ def _stream_app(tmp_path, session, service_active=False, start_fn=None):
     return app.test_client()
 
 
-def test_stream_serves_mjpeg_and_releases(tmp_path):
+def test_stream_serves_mjpeg_until_camera_closes(tmp_path):
     session = _FakeSession(n_frames=2)
     c = _stream_app(tmp_path, session)
     r = c.get("/api/stream.mjpg")
@@ -215,8 +209,6 @@ def test_stream_serves_mjpeg_and_releases(tmp_path):
     body = r.data                      # consumes the generator to its end
     assert body.count(b"--frame") == 2
     assert b"\xff\xd8" in body         # JPEG magic inside a part
-    assert session.acquired == 1
-    assert session.released == 1       # camera freed when the stream ended
 
 
 def test_stream_refused_while_flight_service_runs(tmp_path):
@@ -225,10 +217,7 @@ def test_stream_refused_while_flight_service_runs(tmp_path):
 
 
 def test_stream_409_when_session_paused(tmp_path):
-    session = _FakeSession()
-    session.acquire = lambda: (_ for _ in ()).throw(
-        RuntimeError("camera reserved for capture"))
-    c = _stream_app(tmp_path, session)
+    c = _stream_app(tmp_path, _FakeSession(paused=True))
     assert c.get("/api/stream.mjpg").status_code == 409
 
 
@@ -237,7 +226,7 @@ def test_start_hands_camera_over(tmp_path):
     c = _stream_app(tmp_path, session)
     r = c.post("/api/start", json={})
     assert r.status_code == 200
-    assert session.paused == 20        # viewfinder released before capture
+    assert session.pause_called == 20  # viewfinder released before capture
 
 
 def test_track_empty_without_gps(client):
