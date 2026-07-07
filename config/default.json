@@ -17,6 +17,10 @@
     "known_nir_reflectance": 0.5,
     "known_red_reflectance": 0.5
   },
+  "gcs": {
+    "port": 8080,
+    "gps_port": null
+  },
   "field": {
     "cell_meters": 20.0,
     "healthy_threshold": 0.5,

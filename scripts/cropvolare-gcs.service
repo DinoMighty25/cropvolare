@@ -1,0 +1,26 @@
+# CropVolare Ground Control Station: phone web app served by the Pi at boot.
+# Pairs with cropvolare-flight.service (capture-at-power-on): keep both enabled
+# for flip-and-fly WITH visibility, or enable only this one and start capture
+# from the phone instead.
+#
+# Install on the Pi (adjust User/paths if your username or clone differ):
+#   pip install --break-system-packages flask
+#   sudo cp scripts/cropvolare-gcs.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cropvolare-gcs
+# Then from the phone (hotspot): http://<pi-ip>:8080
+
+[Unit]
+Description=CropVolare ground control station
+After=multi-user.target
+
+[Service]
+Type=simple
+User=dinomighty
+WorkingDirectory=/home/dinomighty/cropvolare
+ExecStart=/usr/bin/python3 scripts/gcs.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

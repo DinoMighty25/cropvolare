@@ -5,9 +5,12 @@ One command to go from "photos sitting on the Pi" to "report.pdf open on screen"
 Optionally pulls the flight folder off the Pi over SSH, then runs the full NDVI
 analysis (process_flight.py) on your laptop where there's CPU and RAM to spare.
 
-    # pull the folder from the Pi, analyze, and open the report:
+    # the zero-thought version: newest flight on the Pi -> report on screen
+    python scripts/ground_station.py --host dinomighty@192.168.1.50 --latest --open
+
+    # pull a specific folder from the Pi, analyze, and open the report:
     python scripts/ground_station.py --host dinomighty@192.168.1.50 \
-        --remote flights/today --input flights/today --outdir output/today --open
+        --remote cropvolare/flights/today --input flights/today --open
 
     # analyze a folder you already copied (SD card / manual scp):
     python scripts/ground_station.py --input flights/today --open
@@ -22,6 +25,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROCESS_FLIGHT = os.path.join(HERE, "process_flight.py")
+
+
+def newest_remote_flight(host, remote_base="cropvolare/flights"):
+    """Name of the newest flight folder on the Pi (via ssh ls -t)."""
+    out = subprocess.run(["ssh", host, f"ls -t {remote_base}"],
+                         capture_output=True, text=True, check=True)
+    names = [n for n in out.stdout.split() if not n.endswith(".json")]
+    if not names:
+        raise SystemExit(f"no flight folders found in {host}:{remote_base}")
+    return names[0]
 
 
 def pull_from_pi(host, remote, dest):
@@ -49,12 +62,16 @@ def open_file(path):
 def main():
     p = argparse.ArgumentParser(
         description="Pull a flight off the Pi (optional) and analyze it")
-    p.add_argument("-i", "--input", required=True,
+    p.add_argument("-i", "--input", default=None,
                    help="local flight folder (also the scp destination if --host)")
     p.add_argument("-o", "--outdir", default=None,
                    help="output folder (default: output/<input folder name>)")
     p.add_argument("--host", help="Pi SSH target, e.g. dinomighty@192.168.1.50")
     p.add_argument("--remote", help="flight folder path on the Pi (used with --host)")
+    p.add_argument("--latest", action="store_true",
+                   help="with --host: auto-pick the newest flight on the Pi")
+    p.add_argument("--remote-base", default="cropvolare/flights",
+                   help="flights dir on the Pi (used with --latest)")
     # pass-throughs to process_flight.py
     p.add_argument("--config")
     p.add_argument("--cell-meters")
@@ -67,9 +84,20 @@ def main():
                    help="open report.pdf when analysis finishes")
     args = p.parse_args()
 
+    if args.latest:
+        if not args.host:
+            p.error("--latest needs --host")
+        name = newest_remote_flight(args.host, args.remote_base)
+        print(f"newest flight on the Pi: {name}")
+        args.remote = f"{args.remote_base}/{name}"
+        args.input = args.input or os.path.join("flights", name)
+
+    if not args.input:
+        p.error("give --input (or --host with --latest)")
+
     if args.host:
         if not args.remote:
-            p.error("--remote is required when using --host")
+            p.error("--remote is required when using --host (or use --latest)")
         pull_from_pi(args.host, args.remote, args.input)
 
     outdir = args.outdir or os.path.join(

@@ -125,6 +125,32 @@ score in the report; pass `--min-sharpness 15` to `process_flight.py` to drop
 them (default 0 = keep everything, so uniform crop seen from high altitude is
 never silently discarded).
 
+### Ground control station (phone web app)
+
+The Pi serves a phone-friendly GCS on port 8080. Enable it once:
+
+```bash
+pip install --break-system-packages flask
+sudo cp scripts/cropvolare-gcs.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cropvolare-gcs
+```
+
+Then from your phone (hotspot): **`http://<pi-ip>:8080`**
+
+- **Dashboard** — live capture status, frame count, disk, camera + NDVI
+  preview, big START/STOP buttons. No SSH at the field.
+- **Field planner** (`/planner`) — tap the map to outline a field, set
+  altitude/overlap, and get the lawnmower survey pattern with distance/time/
+  frame estimates and a too-fast overlap warning. Fields are saved and reused.
+  Export the pattern as **KML** or **Litchi CSV** for DJI waypoint apps.
+- **Live coverage** — once a serial GPS is wired (`gcs.gps_port` in the config
+  or `--gps-port`), the planner shows the drone's live breadcrumb over your
+  polygon while you fly. Phone-Pi WiFi drops beyond ~50-100 m; the trail
+  backfills on reconnect, and `track.csv` in the flight folder is always
+  complete (capture never depends on the phone).
+
+No authentication — hotspot/LAN use only.
+
 ### Field workflow (fly day)
 
 Everything you do at the field, in order:
@@ -215,13 +241,15 @@ cropvolare/
 │   ├── report.py           # one-page PDF report
 │   └── webmap.py           # standalone interactive web map
 ├── scripts/
+│   ├── gcs.py              # Pi-side ground control station (phone web app)
 │   ├── fly.py              # Pi-side one-command field capture (start/status/stop)
 │   ├── capture_flight.py   # Pi-side burst capture -> geotagged JPEGs
 │   ├── capture_ndvi.py     # single-image cli
 │   ├── ground_station.py   # laptop: pull flight off the Pi + analyze + open report
 │   ├── process_flight.py   # whole-flight pipeline -> report
 │   ├── tag_gps.py          # Pi-side GPS EXIF tagging
-│   └── cropvolare-flight.service  # optional: capture at power-on (systemd)
+│   ├── cropvolare-flight.service  # optional: capture at power-on (systemd)
+│   └── cropvolare-gcs.service     # optional: GCS web app at power-on (systemd)
 ├── tests/
 ├── config/
 │   └── default.json

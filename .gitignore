@@ -33,6 +33,7 @@ output/
 data/
 flights/
 calibration/*.npy
+fields/
 
 # Logs
 *.log

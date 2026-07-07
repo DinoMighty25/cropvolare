@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CropVolare Planner</title>
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system, system-ui, sans-serif;
+         background:#101410; color:#e8f0e8; display:flex; flex-direction:column;
+         height:100dvh; }
+  header { display:flex; align-items:center; justify-content:space-between;
+           padding:10px 16px; background:#182018; }
+  header h1 { font-size:17px; margin:0; }
+  header a { color:#8fd08f; text-decoration:none; font-size:15px; }
+  #map { flex:1; min-height:280px; }
+  #panel { padding:10px 12px; background:#182018; font-size:14px; }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+  .row label { color:#9ab09a; }
+  input, select { background:#243024; color:#e8f0e8; border:0; border-radius:8px;
+          padding:8px; width:70px; font-size:14px; }
+  select { width:auto; }
+  button { padding:10px 14px; font-size:14px; font-weight:600; border:0;
+           border-radius:10px; background:#3a5a3a; color:#fff; cursor:pointer; }
+  button.warn { background:#8e2424; }
+  #stats { color:#cfe0cf; }
+  a.dl { color:#8fd08f; margin-right:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128506; Field planner</h1>
+  <a href="/">&larr; Dashboard</a>
+</header>
+<div id="map"></div>
+<div id="panel">
+  <div class="row">
+    <button onclick="undo()">Undo point</button>
+    <button class="warn" onclick="clearAll()">Clear</button>
+    <label>Field:</label>
+    <select id="fieldSel" onchange="loadField()"><option value="">(new)</option></select>
+    <button onclick="saveField()">Save</button>
+  </div>
+  <div class="row">
+    <label>Alt m</label><input id="alt" type="number" value="30" onchange="plan()">
+    <label>Overlap</label><input id="ovl" type="number" step="0.05" value="0.75" onchange="plan()">
+    <label>Speed m/s</label><input id="spd" type="number" value="4" onchange="plan()">
+  </div>
+  <div class="row" id="stats">tap the map to outline the field (3+ points)</div>
+  <div class="row" id="exports"></div>
+</div>
+<script src="/static/vendor/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([40.0, -88.0], 17);
+// satellite imagery needs phone internet; page itself works offline
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 20, attribution: 'Esri' }).addTo(map);
+if (navigator.geolocation)
+  navigator.geolocation.getCurrentPosition(p =>
+    map.setView([p.coords.latitude, p.coords.longitude], 18));
+
+let pts = [];           // [[lat,lon],...]
+let poly = null, lineLayer = null, trackLayer = null, markers = [];
+let currentField = '';
+
+map.on('click', e => {
+  pts.push([e.latlng.lat, e.latlng.lng]);
+  redraw(); plan();
+});
+function redraw() {
+  markers.forEach(m => map.removeLayer(m)); markers = [];
+  if (poly) map.removeLayer(poly);
+  pts.forEach(p => markers.push(
+    L.circleMarker(p, {radius:5, color:'#ffd24d'}).addTo(map)));
+  if (pts.length >= 3)
+    poly = L.polygon(pts, {color:'#ffd24d', weight:2, fillOpacity:0.08}).addTo(map);
+}
+function undo() { pts.pop(); redraw(); plan(); }
+function clearAll() {
+  pts = []; currentField='';
+  document.getElementById('fieldSel').value='';
+  if (lineLayer) map.removeLayer(lineLayer);
+  redraw(); setStats('tap the map to outline the field (3+ points)');
+  document.getElementById('exports').innerHTML='';
+}
+function setStats(t) { document.getElementById('stats').textContent = t; }
+
+async function plan() {
+  if (pts.length < 3) return;
+  const alt = +document.getElementById('alt').value;
+  const ovl = +document.getElementById('ovl').value;
+  const spd = +document.getElementById('spd').value;
+  const r = await fetch('/api/plan', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({polygon: pts, altitude: alt, overlap: ovl, speed: spd})});
+  const j = await r.json();
+  if (!j.ok) { setStats('plan error: ' + j.error); return; }
+  if (lineLayer) map.removeLayer(lineLayer);
+  // one connected boustrophedon path
+  const path = j.lines.flat();
+  lineLayer = L.polyline(path, {color:'#7dff7d', weight:2, dashArray:'6 4'}).addTo(map);
+  const s = j.stats;
+  setStats(`${j.lines.length} lines · ${(s.distance_m/1000).toFixed(2)} km · `
+    + `~${s.time_min} min · ~${s.est_frames} frames · fwd overlap `
+    + `${s.forward_overlap}${s.overlap_ok ? '' : ' ⚠ TOO FAST'}`);
+  updateExports();
+}
+function updateExports() {
+  const el = document.getElementById('exports');
+  if (!currentField) { el.innerHTML = '<i>save the field to enable KML/Litchi export</i>'; return; }
+  const alt = +document.getElementById('alt').value;
+  const ovl = +document.getElementById('ovl').value;
+  el.innerHTML =
+    `<a class="dl" href="/api/export?field=${currentField}&fmt=kml&altitude=${alt}&overlap=${ovl}">Download KML</a>` +
+    `<a class="dl" href="/api/export?field=${currentField}&fmt=litchi&altitude=${alt}&overlap=${ovl}">Download Litchi CSV</a>`;
+}
+async function saveField() {
+  if (pts.length < 3) { alert('need 3+ points'); return; }
+  const name = prompt('field name (letters/digits/_-):', currentField || 'field1');
+  if (!name) return;
+  const r = await fetch('/api/fields', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, polygon: pts})});
+  const j = await r.json();
+  if (!j.ok) { alert(j.error); return; }
+  currentField = name; await loadFieldList();
+  document.getElementById('fieldSel').value = name;
+  updateExports();
+}
+async function loadFieldList() {
+  const list = await (await fetch('/api/fields')).json();
+  const sel = document.getElementById('fieldSel');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">(new)</option>' +
+    list.map(f => `<option value="${f.name}">${f.name}</option>`).join('');
+  sel.value = cur;
+  window._fields = Object.fromEntries(list.map(f => [f.name, f.polygon]));
+}
+function loadField() {
+  const name = document.getElementById('fieldSel').value;
+  if (!name) { clearAll(); return; }
+  currentField = name;
+  pts = window._fields[name].map(p => [p[0], p[1]]);
+  redraw();
+  map.fitBounds(L.polygon(pts).getBounds().pad(0.3));
+  plan();
+}
+
+// live GPS breadcrumb (Phase C - empty until GPS is wired; reconnect-safe)
+let trackPts = [], seen = 0;
+async function pollTrack() {
+  try {
+    const j = await (await fetch('/api/track?since=' + seen)).json();
+    if (j.fixes.length) {
+      seen += j.fixes.length;
+      trackPts.push(...j.fixes.map(f => [f.lat, f.lon]));
+      if (trackLayer) map.removeLayer(trackLayer);
+      trackLayer = L.polyline(trackPts, {color:'#4da3ff', weight:3}).addTo(map);
+    }
+  } catch (e) {}
+}
+setInterval(pollTrack, 2000);
+loadFieldList();
+</script>
+</body>
+</html>

@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cropvolare import geo
+from cropvolare.gpsread import GpsReader
 from cropvolare.ndvi import capture_frame, create_camera, lock_exposure
 
 
@@ -95,63 +96,6 @@ def run_capture(outdir, capture_fn, n_frames, interval, gps_fn=None,
     return saved
 
 
-class GpsReader:
-    """Background thread that keeps the latest GPS fix from a serial NMEA source.
-
-    Pi-only (needs pynmea2 + pyserial). Returns None until a fix arrives, so the
-    capture loop saves untagged frames rather than blocking.
-    """
-
-    def __init__(self, port="/dev/serial0", baud=9600):
-        self.port = port
-        self.baud = baud
-        self._latest = None
-        self._stop = False
-        self._thread = None
-
-    def start(self):
-        import threading
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return self
-
-    def _run(self):
-        try:
-            import pynmea2
-            import serial
-        except ImportError:
-            print("GPS: pynmea2/pyserial not installed; frames stay untagged")
-            return
-        try:
-            ser = serial.Serial(self.port, self.baud, timeout=1.0)
-        except Exception as exc:  # noqa: BLE001 - report and bail, don't crash flight
-            print(f"GPS: could not open {self.port}: {exc}")
-            return
-        while not self._stop:
-            line = ser.readline().decode("ascii", errors="ignore").strip()
-            if not line.startswith("$"):
-                continue
-            try:
-                msg = pynmea2.parse(line)
-            except Exception:  # noqa: BLE001 - skip malformed sentences
-                continue
-            lat = getattr(msg, "latitude", None)
-            lon = getattr(msg, "longitude", None)
-            if lat and lon:
-                alt = getattr(msg, "altitude", None)
-                self._latest = {
-                    "lat": float(lat), "lon": float(lon),
-                    "alt": float(alt) if alt else None,
-                }
-        ser.close()
-
-    def latest(self):
-        return self._latest
-
-    def stop(self):
-        self._stop = True
-
-
 def main():
     parser = argparse.ArgumentParser(description="Burst flight capture")
     parser.add_argument("-o", "--outdir", required=True,
@@ -170,8 +114,10 @@ def main():
 
     gps = None
     if args.gps_port:
+        os.makedirs(args.outdir, exist_ok=True)
         print(f"starting GPS reader on {args.gps_port} ...")
-        gps = GpsReader(port=args.gps_port).start()
+        gps = GpsReader(port=args.gps_port,
+                        track_path=os.path.join(args.outdir, "track.csv")).start()
 
     print("initializing camera ...")
     cam = create_camera()
