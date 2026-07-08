@@ -144,9 +144,14 @@ def load_image(path):
 # --------------------------------------------------------------------------
 
 def extract_channels(image):
-    """Pull out NIR (blue ch) and red (red ch) as float arrays in [0,1]."""
-    nir = image[:, :, 0].astype(np.float64) / 255.0
-    red = image[:, :, 2].astype(np.float64) / 255.0
+    """Pull out NIR (blue ch) and red (red ch) as float arrays in [0,1].
+
+    float32 throughout: NDVI needs ~3 significant digits and the whole chain
+    preserves dtype, so this halves memory and roughly doubles throughput -
+    what lets the 512 MB Pi Zero process a flight on-device.
+    """
+    nir = image[:, :, 0].astype(np.float32) / np.float32(255.0)
+    red = image[:, :, 2].astype(np.float32) / np.float32(255.0)
     return nir, red
 
 
@@ -204,7 +209,8 @@ def solve_leakage_k(image, gamma=0.8, center_frac=0.5):
 
     if nir_mean < 1e-6:
         raise ValueError("grey-card image is too dark to calibrate from")
-    return max(0.0, (red_mean - nir_mean) / nir_mean)
+    # plain float: this value gets json.dump'ed into the config by calibrate.py
+    return max(0.0, float((red_mean - nir_mean) / nir_mean))
 
 
 def compute_vari(image):
@@ -276,13 +282,13 @@ def apply_flatfield(image, gain):
     The gain is resized to the image automatically when shapes differ (gains
     are stored downscaled by save_flatfield).
     """
-    gain = np.asarray(gain, dtype=np.float64)
+    gain = np.asarray(gain, dtype=np.float32)
     if gain.shape[:2] != image.shape[:2]:
         if cv2 is None:
             raise RuntimeError("opencv required to resize a stored gain map")
         gain = cv2.resize(gain, (image.shape[1], image.shape[0]),
                           interpolation=cv2.INTER_LINEAR)
-    corrected = image.astype(np.float64) * gain
+    corrected = image.astype(np.float32) * gain
     return np.clip(corrected, 0, 255).astype(np.uint8)
 
 

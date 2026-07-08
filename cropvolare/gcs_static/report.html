@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CropVolare Report</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif;
+         background:#101410; color:#e8f0e8; }
+  header { display:flex; align-items:center; justify-content:space-between;
+           padding:12px 16px; background:#182018; }
+  header h1 { font-size:18px; margin:0; }
+  header a { color:#8fd08f; text-decoration:none; font-size:15px; }
+  main { padding:12px; max-width:560px; margin:0 auto; }
+  .card { background:#182018; border-radius:14px; padding:16px; margin-bottom:12px; }
+  #verdict { text-align:center; padding:10px 4px; }
+  #level { font-size:26px; font-weight:800; letter-spacing:1px; }
+  .strong #level { color:#3ddc3d; } .fair #level { color:#e0b93d; }
+  .poor #level { color:#e07a3d; } .critical #level { color:#e03d3d; }
+  .unknown #level { color:#999; }
+  #line { margin-top:8px; font-size:15px; color:#cfe0cf; }
+  #score { font-size:13px; color:#9ab09a; margin-top:6px; }
+  .healthbar { display:flex; height:22px; border-radius:8px; overflow:hidden;
+               margin-top:12px; font-size:0; }
+  .healthbar div { height:100%; }
+  .hb-h { background:#2f9e2f; } .hb-m { background:#e0b93d; }
+  .hb-s { background:#e07a3d; } .hb-x { background:#e03d3d; }
+  .legend { display:flex; justify-content:space-between; font-size:12px;
+            color:#9ab09a; margin-top:6px; flex-wrap:wrap; gap:4px; }
+  .statline { display:flex; justify-content:space-between; margin:4px 0; font-size:15px; }
+  .statline span:first-child { color:#9ab09a; }
+  .patch { padding:10px 0; border-bottom:1px solid #243024; }
+  .patch:last-child { border-bottom:0; }
+  .patch .head { font-weight:700; font-size:15px; }
+  .patch .cause { font-size:14px; color:#cfe0cf; margin-top:4px; }
+  .patch .loc { font-size:12px; color:#9ab09a; margin-top:2px; }
+  .btn { display:block; text-align:center; width:100%; margin-top:8px;
+         padding:16px 0; font-size:17px; font-weight:700; border:0;
+         border-radius:12px; background:#1f4e6e; color:#fff;
+         text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128760; Report</h1>
+  <a href="/">&larr; Home</a>
+</header>
+<main>
+  <div class="card" id="verdictCard">
+    <div id="verdict" class="unknown">
+      <div id="level">&hellip;</div>
+      <div id="line">loading report&hellip;</div>
+      <div id="score"></div>
+    </div>
+    <div class="healthbar" id="healthbar" style="display:none">
+      <div class="hb-h"></div><div class="hb-m"></div>
+      <div class="hb-s"></div><div class="hb-x"></div>
+    </div>
+    <div class="legend" id="legend" style="display:none"></div>
+  </div>
+
+  <div class="card" id="statsCard" style="display:none">
+    <div class="statline"><span>Field</span><span id="field">&mdash;</span></div>
+    <div class="statline"><span>Date</span><span id="date">&mdash;</span></div>
+    <div class="statline"><span>Photos used</span><span id="frames">&mdash;</span></div>
+    <div class="statline"><span>Area</span><span id="area">&mdash;</span></div>
+    <div class="statline"><span>Average NDVI</span><span id="mean">&mdash;</span></div>
+  </div>
+
+  <div class="card" id="patchCard" style="display:none">
+    <b id="patchTitle">Areas to go check</b>
+    <div id="patches"></div>
+  </div>
+
+  <div class="card">
+    <a class="btn" id="pdfLink" href="#">Download the PDF report</a>
+  </div>
+</main>
+<script>
+const flight = new URLSearchParams(location.search).get('flight');
+document.getElementById('pdfLink').href =
+  '/api/reports/' + encodeURIComponent(flight) + '/report.pdf';
+
+function pct(v) { return (v==null?0:v); }
+
+async function load() {
+  let r;
+  try {
+    r = await (await fetch('/api/reports/' + encodeURIComponent(flight)
+                           + '/result.json')).json();
+  } catch (e) {
+    document.getElementById('line').textContent =
+      'could not load this report - is the Pi on?';
+    return;
+  }
+  const v = r.verdict || {level:'unknown', line:'', score:null};
+  const box = document.getElementById('verdict');
+  box.className = v.level || 'unknown';
+  document.getElementById('level').textContent = (v.level||'?').toUpperCase();
+  document.getElementById('line').textContent = v.line || '';
+  document.getElementById('score').textContent =
+    v.score != null ? 'health score ' + v.score + ' / 100' : '';
+
+  const d = r.distribution || {};
+  if (d.n) {
+    const hb = document.getElementById('healthbar');
+    hb.style.display = 'flex';
+    const parts = [pct(d.pct_healthy), pct(d.pct_moderate),
+                   pct(d.pct_stressed), pct(d.pct_severe)];
+    hb.children[0].style.width = parts[0] + '%';
+    hb.children[1].style.width = parts[1] + '%';
+    hb.children[2].style.width = parts[2] + '%';
+    hb.children[3].style.width = parts[3] + '%';
+    const lg = document.getElementById('legend');
+    lg.style.display = 'flex';
+    lg.innerHTML = `<span>&#9632; healthy ${parts[0]}%</span>
+      <span style="color:#e0b93d">&#9632; moderate ${parts[1]}%</span>
+      <span style="color:#e07a3d">&#9632; stressed ${parts[2]}%</span>
+      <span style="color:#e03d3d">&#9632; severe ${parts[3]}%</span>`;
+  }
+
+  document.getElementById('statsCard').style.display = 'block';
+  document.getElementById('field').textContent = r.field || '—';
+  document.getElementById('date').textContent = r.date || '—';
+  document.getElementById('frames').textContent = r.n_frames != null
+    ? r.n_frames + (r.n_filtered ? ' (' + r.n_filtered + ' blurry skipped)' : '')
+    : '—';
+  document.getElementById('area').textContent =
+    r.area_ha != null ? r.area_ha + ' ha' : 'no GPS';
+  document.getElementById('mean').textContent = d.mean != null ? d.mean : '—';
+
+  const card = document.getElementById('patchCard');
+  const holder = document.getElementById('patches');
+  if (r.patches && r.patches.length) {
+    card.style.display = 'block';
+    holder.innerHTML = r.patches.map(p => `
+      <div class="patch">
+        <div class="head">#${p.rank} — ${p.area_ha} ha, NDVI ${p.mean_ndvi}</div>
+        <div class="cause">${(p.causes && p.causes[0]) || 'low vigour patch'}</div>
+        <div class="loc">${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</div>
+      </div>`).join('');
+  } else if (r.worst_frames && r.worst_frames.length) {
+    // no-GPS flight: point at the weakest photos instead of map patches
+    card.style.display = 'block';
+    document.getElementById('patchTitle').textContent = 'Weakest photos to review';
+    holder.innerHTML = r.worst_frames.slice(0, 5).map(w => `
+      <div class="patch">
+        <div class="head">${w.filename}</div>
+        <div class="cause">NDVI ${w.mean_ndvi}</div>
+      </div>`).join('');
+  }
+}
+load();
+</script>
+</body>
+</html>

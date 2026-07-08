@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from cropvolare import flightctl, planner
+from cropvolare import flightctl, jobs, planner
 from cropvolare.camstream import CameraSession
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +36,23 @@ FIELDS_DIR = os.path.join(REPO, "fields")
 DEFAULT_CONFIG = os.path.join(REPO, "config", "default.json")
 
 _FIELD_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_FLIGHT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _git_version():
+    """'abc1234 2026-07-08' of the running checkout, or None outside git."""
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%h %cs"],
+                             cwd=REPO, capture_output=True, text=True,
+                             timeout=5)
+        return out.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - version is cosmetic, never fatal
+        return None
+
+
+def _sudo_shutdown():
+    """Power off cleanly (needs the sudoers entry from docs/hardware notes)."""
+    return subprocess.run(["sudo", "shutdown", "now"]).returncode
 
 
 def _load_config(path=DEFAULT_CONFIG):
@@ -61,7 +78,8 @@ def _flight_service_active():
 def create_app(base=None, fields_dir=None, gps=None,
                start_fn=None, stop_fn=None, config=None,
                flight_service_active_fn=None, session=None,
-               snapshot_wait=12.0):
+               snapshot_wait=12.0, runner=None, shutdown_fn=None,
+               version=None):
     """App factory; injectable pieces keep it fully testable on the laptop.
 
     ONE RULE ABOVE ALL: only the CameraSession worker may ever open the
@@ -77,6 +95,24 @@ def create_app(base=None, fields_dir=None, gps=None,
     session = session or CameraSession()
     cfg = config if config is not None else _load_config()
     ndvi_cfg = cfg.get("ndvi", {})
+    gcs_cfg = cfg.get("gcs", {})
+    storage_cfg = cfg.get("storage", {})
+    shutdown_fn = shutdown_fn or _sudo_shutdown
+    version = version if version is not None else _git_version()
+
+    def _autopilot(_status=None):
+        # after a job finishes (report safely written) is the right moment
+        # to purge junk captures and reclaim space from processed flights
+        flightctl.storage_autopilot(
+            base, min_free_mb=storage_cfg.get("min_free_mb", 2048),
+            min_keep_frames=storage_cfg.get("min_keep_frames", 15))
+
+    if runner is None:
+        runner = jobs.JobRunner(
+            base=base,
+            capture_active_fn=lambda: (flightctl.status_info(base)["capturing"]
+                                       or service_active_fn()),
+            on_done=_autopilot)
 
     app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
     state = {"gps": gps}
@@ -86,9 +122,22 @@ def create_app(base=None, fields_dir=None, gps=None,
     def index():
         return send_from_directory(STATIC_DIR, "index.html")
 
+    @app.get("/pro")
+    def pro_page():
+        return send_from_directory(STATIC_DIR, "pro.html")
+
+    @app.get("/report")
+    def report_page():
+        return send_from_directory(STATIC_DIR, "report.html")
+
     @app.get("/planner")
     def planner_page():
         return send_from_directory(STATIC_DIR, "planner.html")
+
+    @app.get("/manifest.json")
+    def manifest():
+        # served from the root so the PWA scope covers the whole app
+        return send_from_directory(STATIC_DIR, "manifest.json")
 
     # --- flight control ----------------------------------------------------
     @app.get("/api/status")
@@ -96,6 +145,8 @@ def create_app(base=None, fields_dir=None, gps=None,
         info = flightctl.status_info(base)
         info["gps"] = state["gps"].latest() if state["gps"] else None
         info["viewfinder"] = session.info()
+        info["version"] = version
+        info["processing"] = runner.status()
         return jsonify(info)
 
     @app.post("/api/start")
@@ -113,12 +164,74 @@ def create_app(base=None, fields_dir=None, gps=None,
     @app.post("/api/stop")
     def api_stop():
         log = []
+        meta = flightctl.read_meta(base)  # before stop() clears it
         rc = stop_fn(base, log_fn=log.append)
-        return jsonify({"ok": rc == 0, "log": log}), (200 if rc == 0 else 409)
+        processing = False
+        if rc == 0 and meta and gcs_cfg.get("auto_process", True):
+            flight_dir = meta["dir"]
+            flight = os.path.basename(flight_dir)
+            n = flightctl.count_frames(flight_dir)
+            if n >= gcs_cfg.get("auto_process_min_frames", 50):
+                ok, err = runner.start(flight,
+                                       field=gcs_cfg.get("default_field"))
+                processing = ok
+                log.append(f"processing started ({n} frames)" if ok
+                           else f"auto-process skipped: {err}")
+            else:
+                log.append(f"auto-process skipped: only {n} frames")
+        return jsonify({"ok": rc == 0, "log": log,
+                        "processing": processing}), (200 if rc == 0 else 409)
 
     @app.get("/api/flights")
     def api_flights():
         return jsonify(flightctl.list_flights(base))
+
+    # --- on-device processing + reports ------------------------------------
+    @app.post("/api/process/<flight>")
+    def api_process_start(flight):
+        if not _FLIGHT_NAME.match(flight):
+            return jsonify({"ok": False, "error": "bad flight name"}), 400
+        body = request.get_json(silent=True) or {}
+        field_name = body.get("field") or gcs_cfg.get("default_field")
+        if field_name and not _FIELD_NAME.match(field_name):
+            return jsonify({"ok": False,
+                            "error": "field: letters/digits/_- only"}), 400
+        ok, err = runner.start(flight, field=field_name)
+        if not ok:
+            code = 404 if err and err.startswith("unknown flight") else 409
+            return jsonify({"ok": False, "error": err}), code
+        return jsonify({"ok": True, "status": runner.status()})
+
+    @app.get("/api/process")
+    def api_process_status():
+        return jsonify(runner.status())
+
+    @app.get("/api/reports")
+    def api_reports():
+        return jsonify(jobs.list_reports(base))
+
+    @app.get("/api/reports/<flight>/report.pdf")
+    def api_report_pdf(flight):
+        if not _FLIGHT_NAME.match(flight):
+            return ("bad flight name", 400)
+        return send_from_directory(os.path.join(base, flight, "analysis"),
+                                   "report.pdf")
+
+    @app.get("/api/reports/<flight>/result.json")
+    def api_report_result(flight):
+        if not _FLIGHT_NAME.match(flight):
+            return ("bad flight name", 400)
+        return send_from_directory(os.path.join(base, flight, "analysis"),
+                                   "result.json")
+
+    # --- device ops ---------------------------------------------------------
+    @app.post("/api/shutdown")
+    def api_shutdown():
+        if flightctl.status_info(base)["capturing"]:
+            return jsonify({"ok": False,
+                            "error": "capture is running - STOP first"}), 409
+        rc = shutdown_fn()
+        return jsonify({"ok": rc == 0}), (200 if rc == 0 else 500)
 
     # --- previews (read saved frames only; never touches the camera) -------
     def _load_preview():
@@ -342,6 +455,15 @@ def main():
         from cropvolare.gpsread import GpsReader
         print(f"starting GPS reader on {gps_port} ...")
         gps = GpsReader(port=gps_port).start()
+
+    storage_cfg = cfg.get("storage", {})
+    try:
+        flightctl.storage_autopilot(
+            args.base or flightctl.DEFAULT_BASE,
+            min_free_mb=storage_cfg.get("min_free_mb", 2048),
+            min_keep_frames=storage_cfg.get("min_keep_frames", 15))
+    except Exception as exc:  # noqa: BLE001 - cleanup must never block startup
+        print(f"storage autopilot skipped: {exc}")
 
     app = create_app(base=args.base, gps=gps, config=cfg)
     app.config["GPS_PORT"] = gps_port

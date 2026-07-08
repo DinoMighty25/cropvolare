@@ -172,6 +172,58 @@ def latest_frame(base):
 
 
 # --------------------------------------------------------------------------
+# storage autopilot
+# --------------------------------------------------------------------------
+
+def free_mb(base):
+    return shutil.disk_usage(os.path.abspath(base)).free / (1024 * 1024)
+
+
+def storage_autopilot(base, min_free_mb=2048, min_keep_frames=15,
+                      log_fn=print, free_mb_fn=None):
+    """Keep the SD card healthy without SSH: runs at GCS boot + after jobs.
+
+    Two rules, in order:
+      1. purge trivial captures (< min_keep_frames frames) - bench/desk junk
+         from power-on tests that otherwise accumulates forever;
+      2. while free space < min_free_mb, delete the OLDEST flight that has
+         already been processed (analysis/report.pdf exists). Unprocessed
+         real flights are never touched - data loss is worse than a full card.
+
+    The active flight (capture in progress) is always exempt. Returns the list
+    of deleted flight names.
+    """
+    free_fn = free_mb_fn or (lambda: free_mb(base))
+    meta = read_meta(base)
+    active = os.path.basename(meta["dir"]) if meta else None
+    deleted = []
+
+    flights = list_flights(base)  # newest first
+    for e in flights:
+        if e["name"] == active:
+            continue
+        if e["n_frames"] < min_keep_frames:
+            shutil.rmtree(os.path.join(base, e["name"]), ignore_errors=True)
+            deleted.append(e["name"])
+            log_fn(f"storage: purged trivial capture {e['name']} "
+                   f"({e['n_frames']} frames)")
+
+    # oldest-first pass over processed flights until there's room
+    remaining = [e for e in reversed(list_flights(base)) if e["name"] != active]
+    for e in remaining:
+        if free_fn() >= min_free_mb:
+            break
+        report = os.path.join(base, e["name"], "analysis", "report.pdf")
+        if not os.path.exists(report):
+            continue
+        shutil.rmtree(os.path.join(base, e["name"]), ignore_errors=True)
+        deleted.append(e["name"])
+        log_fn(f"storage: deleted oldest processed flight {e['name']} "
+               f"(free space below {min_free_mb} MB)")
+    return deleted
+
+
+# --------------------------------------------------------------------------
 # commands (shared by fly.py CLI and the GCS web app)
 # --------------------------------------------------------------------------
 

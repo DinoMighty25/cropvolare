@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>CropVolare GCS</title>
+<title>CropVolare</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<meta name="theme-color" content="#101410">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -12,153 +15,216 @@
   header { display:flex; align-items:center; justify-content:space-between;
            padding:12px 16px; background:#182018; }
   header h1 { font-size:18px; margin:0; }
-  header a { color:#8fd08f; text-decoration:none; font-size:15px; }
+  header a { color:#8fd08f; text-decoration:none; font-size:14px; }
   main { padding:12px; max-width:560px; margin:0 auto; }
-  .card { background:#182018; border-radius:12px; padding:14px; margin-bottom:12px; }
-  .statusline { display:flex; justify-content:space-between; margin:4px 0; font-size:15px; }
-  .statusline span:first-child { color:#9ab09a; }
-  .badge { padding:2px 10px; border-radius:10px; font-weight:600; }
-  .badge.on  { background:#1d4d1d; color:#7dff7d; }
-  .badge.off { background:#4d1d1d; color:#ff9d9d; }
-  .btnrow { display:flex; gap:10px; margin-top:10px; }
-  button { flex:1; padding:16px 0; font-size:17px; font-weight:700; border:0;
-           border-radius:12px; cursor:pointer; }
-  #startBtn { background:#1f6e1f; color:#fff; }
-  #stopBtn  { background:#8e2424; color:#fff; }
-  button:disabled { opacity:.4; }
+  .card { background:#182018; border-radius:14px; padding:16px; margin-bottom:12px; }
+  /* the ONE dominant element: a big state banner + one big action button */
+  #stateBanner { text-align:center; padding:18px 8px 6px; }
+  #stateWord { font-size:26px; font-weight:800; letter-spacing:1px; }
+  #stateDetail { margin-top:6px; font-size:15px; color:#9ab09a; min-height:20px; }
+  .bigbtn { display:block; width:100%; margin-top:14px; padding:22px 0;
+            font-size:22px; font-weight:800; border:0; border-radius:14px;
+            cursor:pointer; color:#fff; letter-spacing:1px; }
+  .bigbtn.fly  { background:#1f6e1f; }
+  .bigbtn.stop { background:#8e2424; }
+  .bigbtn.view { background:#1f4e6e; }
+  .bigbtn:disabled { opacity:.5; }
+  .ready  #stateWord { color:#7dff7d; }
+  .rec    #stateWord { color:#ff9d9d; }
+  .proc   #stateWord { color:#ffd97d; }
+  .done   #stateWord { color:#7dc9ff; }
+  .err    #stateWord { color:#ff9d9d; }
+  #bar { height:10px; background:#243024; border-radius:6px; overflow:hidden;
+         margin-top:12px; display:none; }
+  #barFill { height:100%; width:0%; background:#e0b93d; transition:width .8s; }
   #preview { width:100%; border-radius:10px; background:#0b0e0b; min-height:120px; }
-  .toggle { display:flex; gap:8px; margin-bottom:8px; }
-  .toggle button { padding:8px 0; font-size:14px; background:#243024; color:#cfe0cf; }
-  .toggle button.active { background:#3a5a3a; color:#fff; }
-  table { width:100%; border-collapse:collapse; font-size:14px; }
-  td, th { padding:6px 4px; text-align:left; border-bottom:1px solid #243024; }
-  #log { font-size:12px; color:#9ab09a; white-space:pre-wrap; margin-top:8px; }
+  #previewCap { font-size:12px; color:#9ab09a; margin-top:6px; }
+  .light { display:inline-block; width:14px; height:14px; border-radius:50%;
+           margin-right:10px; flex:none; }
+  .light.strong { background:#3ddc3d; }
+  .light.fair { background:#e0b93d; }
+  .light.poor { background:#e07a3d; }
+  .light.critical { background:#e03d3d; }
+  .light.unknown { background:#666; }
+  .repRow { display:flex; align-items:center; padding:10px 4px;
+            border-bottom:1px solid #243024; color:inherit;
+            text-decoration:none; }
+  .repRow:last-child { border-bottom:0; }
+  .repRow .main { flex:1; }
+  .repRow .name { font-size:15px; font-weight:600; }
+  .repRow .sub { font-size:12px; color:#9ab09a; }
+  .repRow .score { font-size:16px; font-weight:700; }
+  footer { text-align:center; padding:16px; font-size:12px; color:#66805f; }
+  footer button { background:none; border:1px solid #4d1d1d; color:#c98f8f;
+                  border-radius:8px; padding:8px 14px; font-size:13px; cursor:pointer; }
 </style>
 </head>
 <body>
 <header>
   <h1>&#128760; CropVolare</h1>
-  <a href="/planner">Field planner &rarr;</a>
+  <span><a href="/planner">Planner</a> &nbsp; <a href="/pro">Pro &rarr;</a></span>
 </header>
 <main>
-  <div class="card">
-    <div class="statusline"><span>Capture</span><span id="capBadge" class="badge off">&mdash;</span></div>
-    <div class="statusline"><span>Flight</span><span id="flight">&mdash;</span></div>
-    <div class="statusline"><span>Frames</span><span id="frames">&mdash;</span></div>
-    <div class="statusline"><span>Last frame</span><span id="age">&mdash;</span></div>
-    <div class="statusline"><span>Disk free</span><span id="disk">&mdash;</span></div>
-    <div class="statusline"><span>GPS</span><span id="gps">&mdash;</span></div>
-    <div class="btnrow">
-      <button id="startBtn" onclick="doStart()">START</button>
-      <button id="stopBtn" onclick="doStop()">STOP</button>
+  <div class="card" id="stateCard">
+    <div id="stateBanner" class="ready">
+      <div id="stateWord">&hellip;</div>
+      <div id="stateDetail">connecting to CropVolare&hellip;</div>
+      <div id="bar"><div id="barFill"></div></div>
     </div>
-    <div id="log"></div>
+    <button id="actionBtn" class="bigbtn fly" style="display:none"></button>
+    <button id="secondBtn" class="bigbtn view" style="display:none"></button>
+  </div>
+
+  <div class="card" id="previewCard">
+    <img id="preview" alt="viewfinder">
+    <div id="previewCap">&mdash;</div>
   </div>
 
   <div class="card">
-    <div class="toggle">
-      <button id="rawBtn" class="active" onclick="setMode('raw')">Camera</button>
-      <button id="ndviBtn" onclick="setMode('ndvi')">NDVI</button>
-    </div>
-    <img id="preview" alt="no frames yet">
-    <div id="previewCap" style="font-size:12px;color:#9ab09a;margin-top:6px;">&mdash;</div>
-  </div>
-
-  <div class="card">
-    <b>Flights on card</b>
-    <table id="flights"><tr><th>flight</th><th>frames</th><th>MB</th></tr></table>
+    <b>Reports</b>
+    <div id="reports"><div class="sub" style="color:#9ab09a;font-size:13px;
+      padding:8px 4px;">No reports yet &mdash; fly to make one.</div></div>
   </div>
 </main>
+<footer>
+  <span id="version"></span><br><br>
+  <button onclick="powerOff()">&#9211; Power off safely</button>
+</footer>
 <script>
-let mode = 'raw';
+// One dominant state machine:
+// READY -> RECORDING -> MAKING YOUR REPORT -> REPORT READY -> (view / fly again)
 let capturing = false;
+let uiState = '';           // ready | rec | proc | done | err
+let seenDone = localStorage.getItem('seenDoneFlight') || '';
 let previewTimer = null;
-function setMode(m) {
-  mode = m;
-  document.getElementById('rawBtn').classList.toggle('active', m==='raw');
-  document.getElementById('ndviBtn').classList.toggle('active', m==='ndvi');
-  refreshPreview();
+
+function setState(s, word, detail, action, second) {
+  const banner = document.getElementById('stateBanner');
+  banner.className = s;
+  document.getElementById('stateWord').textContent = word;
+  document.getElementById('stateDetail').textContent = detail;
+  const a = document.getElementById('actionBtn');
+  const b = document.getElementById('secondBtn');
+  if (action) { a.style.display='block'; a.textContent=action.label;
+                a.className='bigbtn '+action.cls; a.onclick=action.fn; }
+  else a.style.display='none';
+  if (second) { b.style.display='block'; b.textContent=second.label;
+                b.className='bigbtn '+second.cls; b.onclick=second.fn; }
+  else b.style.display='none';
+  document.getElementById('bar').style.display = (s==='proc') ? 'block' : 'none';
+  if (s !== uiState) { uiState = s; refreshPreview(); }
 }
+
+function fmtEta(s) {
+  if (s == null) return 'estimating time…';
+  if (s < 90) return '~1 min left';
+  return '~' + Math.round(s/60) + ' min left';
+}
+
+async function tick() {
+  let s;
+  try { s = await (await fetch('/api/status')).json(); }
+  catch (e) {
+    setState('err', 'NOT CONNECTED', 'join the CropVolare WiFi, then reopen', null, null);
+    return;
+  }
+  document.getElementById('version').textContent =
+    s.version ? 'CropVolare ' + s.version : '';
+  capturing = s.capturing;
+  const p = s.processing || {state:'idle'};
+
+  if (s.capturing) {
+    setState('rec', '● RECORDING',
+      s.frames + ' photos' + (s.last_frame_age_s != null
+        ? ' • last ' + s.last_frame_age_s + 's ago' : ''),
+      {label:'STOP', cls:'stop', fn:doStop}, null);
+  } else if (p.state === 'running') {
+    setState('proc', 'MAKING YOUR REPORT',
+      fmtEta(p.eta_s) + ' — you can pack up, keep the drone powered',
+      null, null);
+    document.getElementById('barFill').style.width = (p.pct||0) + '%';
+  } else if (p.state === 'done' && p.flight && p.flight !== seenDone) {
+    setState('done', 'REPORT READY',
+      p.verdict ? p.verdict.line : 'your field report is ready',
+      {label:'VIEW REPORT', cls:'view', fn:() => viewReport(p.flight)},
+      {label:'FLY AGAIN', cls:'fly', fn:doStart});
+  } else if (p.state === 'error') {
+    setState('err', 'REPORT FAILED', p.error || 'processing error',
+      {label:'RETRY', cls:'view', fn:() => retry(p.flight)},
+      {label:'FLY', cls:'fly', fn:doStart});
+  } else {
+    setState('ready', 'READY TO FLY', 'aim check below, then hit FLY',
+      {label:'FLY', cls:'fly', fn:doStart}, null);
+  }
+}
+
+function viewReport(flight) {
+  localStorage.setItem('seenDoneFlight', flight);
+  seenDone = flight;
+  location.href = '/report?flight=' + encodeURIComponent(flight);
+}
+async function doStart() {
+  setState('rec', 'STARTING…', 'first photo takes ~30-45 s', null, null);
+  try { await fetch('/api/start', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:'{}'}); } catch(e) {}
+  tick();
+}
+async function doStop() {
+  setState('proc', 'STOPPING…', 'finishing the last photo', null, null);
+  try { await fetch('/api/stop', {method:'POST'}); } catch(e) {}
+  tick();
+}
+async function retry(flight) {
+  try { await fetch('/api/process/' + encodeURIComponent(flight),
+    {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); }
+  catch(e) {}
+  tick();
+}
+async function powerOff() {
+  if (!confirm('Power off the CropVolare unit?')) return;
+  try { await fetch('/api/shutdown', {method:'POST'}); } catch(e) {}
+  setState('err', 'POWERING OFF', 'wait 20 s before flipping the switch', null, null);
+}
+
 function refreshPreview() {
-  // capturing: poll the newest saved flight frame (no camera use).
-  // idle: continuous MJPEG live stream - one connection, real motion; the
-  // server owns camera handoff so capture can always take the camera.
   clearTimeout(previewTimer);
   const img = document.getElementById('preview');
   const cap = document.getElementById('previewCap');
+  const card = document.getElementById('previewCard');
+  if (uiState === 'proc' || uiState === 'done') { card.style.display='none'; return; }
+  card.style.display = 'block';
   if (capturing) {
-    const url = (mode==='raw' ? '/api/preview.jpg' : '/api/preview_ndvi.jpg')
-                + '?t=' + Date.now();
-    img.onload = () => {
-      cap.textContent = 'latest flight frame';
-      previewTimer = setTimeout(refreshPreview, 2500);
-    };
-    img.onerror = () => {
-      cap.textContent = 'no frames yet';
-      previewTimer = setTimeout(refreshPreview, 4000);
-    };
-    img.src = url;
+    img.onload = () => { cap.textContent = 'latest photo from the drone';
+                         previewTimer = setTimeout(refreshPreview, 2500); };
+    img.onerror = () => { cap.textContent = 'waiting for first photo…';
+                          previewTimer = setTimeout(refreshPreview, 4000); };
+    img.src = '/api/preview.jpg?t=' + Date.now();
   } else {
-    // MJPEG: the browser keeps rendering frames from this one request.
-    // onerror fires if the stream drops (WiFi blip, camera busy) -> retry.
-    img.onload = () => { cap.textContent = 'LIVE viewfinder'; };
-    img.onerror = () => {
-      cap.textContent = 'viewfinder reconnecting…';
-      previewTimer = setTimeout(refreshPreview, 3000);
-    };
-    img.src = '/api/stream.mjpg' + (mode==='ndvi' ? '?ndvi=1&' : '?')
-              + 't=' + Date.now();
+    img.onload = () => { cap.textContent = 'LIVE — check your aim'; };
+    img.onerror = () => { cap.textContent = 'viewfinder reconnecting…';
+                          previewTimer = setTimeout(refreshPreview, 3000); };
+    img.src = '/api/stream.mjpg?t=' + Date.now();
   }
 }
-async function refreshStatus() {
-  try {
-    const s = await (await fetch('/api/status')).json();
-    if (s.capturing !== capturing) {   // mode changed: re-aim the preview
-      capturing = s.capturing;
-      refreshPreview();
-    }
-    const b = document.getElementById('capBadge');
-    b.textContent = s.capturing ? 'CAPTURING' : 'stopped';
-    b.className = 'badge ' + (s.capturing ? 'on' : 'off');
-    document.getElementById('flight').textContent = s.flight || '—';
-    document.getElementById('frames').textContent = s.frames;
-    document.getElementById('age').textContent =
-      s.last_frame_age_s == null ? '—' : s.last_frame_age_s + 's ago';
-    document.getElementById('disk').textContent =
-      s.disk_free_mb == null ? '—' : (s.disk_free_mb/1024).toFixed(1) + ' GB';
-    document.getElementById('gps').textContent = s.gps
-      ? s.gps.lat.toFixed(5) + ', ' + s.gps.lon.toFixed(5) : 'no fix / not wired';
-    document.getElementById('startBtn').disabled = s.capturing;
-    document.getElementById('stopBtn').disabled = !s.capturing;
-  } catch (e) { /* pi unreachable; keep last values */ }
+
+async function refreshReports() {
+  let list;
+  try { list = await (await fetch('/api/reports')).json(); } catch(e) { return; }
+  if (!list.length) return;
+  document.getElementById('reports').innerHTML = list.map(r => `
+    <a class="repRow" href="/report?flight=${encodeURIComponent(r.flight)}">
+      <span class="light ${r.level||'unknown'}"></span>
+      <span class="main">
+        <div class="name">${r.field || r.flight}</div>
+        <div class="sub">${r.date||''} • ${r.n_frames||'?'} photos</div>
+      </span>
+      <span class="score">${r.score!=null ? r.score : ''}</span>
+    </a>`).join('');
 }
-async function refreshFlights() {
-  try {
-    const list = await (await fetch('/api/flights')).json();
-    const t = document.getElementById('flights');
-    t.innerHTML = '<tr><th>flight</th><th>frames</th><th>MB</th></tr>' +
-      list.map(f => `<tr><td>${f.name}</td><td>${f.n_frames}</td><td>${f.size_mb}</td></tr>`).join('');
-  } catch (e) {}
-}
-async function doStart() {
-  document.getElementById('log').textContent = 'starting…';
-  const r = await fetch('/api/start', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body:'{}'});
-  const j = await r.json();
-  document.getElementById('log').textContent = j.log.join('\n');
-  refreshStatus(); refreshFlights();
-}
-async function doStop() {
-  document.getElementById('log').textContent = 'stopping…';
-  const r = await fetch('/api/stop', {method:'POST'});
-  const j = await r.json();
-  document.getElementById('log').textContent = j.log.join('\n');
-  refreshStatus(); refreshFlights();
-}
-refreshStatus(); refreshFlights(); refreshPreview();
-setInterval(refreshStatus, 2000);
-setInterval(refreshFlights, 10000);
-// preview refresh is self-scheduling (see refreshPreview)
+
+tick(); refreshReports(); refreshPreview();
+setInterval(tick, 2000);
+setInterval(refreshReports, 10000);
 </script>
 </body>
 </html>

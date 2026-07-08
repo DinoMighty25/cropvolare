@@ -313,3 +313,12 @@ def test_colorize_shape_and_type():
     out = colorize_ndvi(ndvi)
     assert out.shape == (8, 8, 3)
     assert out.dtype == np.uint8
+
+
+def test_ndvi_chain_is_float32():
+    # float32 end to end is what fits flights in the Pi Zero's 512 MB
+    img = np.zeros((8, 8, 3), np.uint8)
+    img[:, :, 0] = 200
+    img[:, :, 2] = 80
+    out = compute_ndvi_from_image(img)
+    assert out.dtype == np.float32

@@ -114,3 +114,39 @@ def test_process_directory_overlays(geotagged_dir, tmp_path):
     assert all(f["properties"]["overlay_png"] for f in tagged)
     import os
     assert len(os.listdir(overlay_dir)) == 5
+
+
+# --- process_scale: the on-device fast path ---------------------------------
+
+def test_process_scale_ndvi_within_tolerance(tmp_path):
+    # textured (non-uniform) frames so downscaling actually averages pixels
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(42)
+    d = tmp_path / "tex"
+    d.mkdir()
+    for i in range(3):
+        img = np.zeros((128, 128, 3), np.uint8)
+        img[:, :, 0] = rng.integers(120, 240, (128, 128))
+        img[:, :, 2] = rng.integers(20, 120, (128, 128))
+        cv2.imwrite(str(d / f"t{i}.jpg"), img)
+
+    full = batch.process_directory(str(d))
+    half = batch.process_directory(str(d), process_scale=0.5)
+    assert half["metadata"]["params"]["process_scale"] == 0.5
+    assert len(full["features"]) == len(half["features"]) == 3
+    for a, b in zip(full["features"], half["features"]):
+        assert abs(a["properties"]["mean_ndvi"]
+                   - b["properties"]["mean_ndvi"]) < 0.02
+        # sharpness is measured BEFORE downscaling, so min_sharpness
+        # thresholds mean the same thing at every scale
+        assert a["properties"]["sharpness"] == b["properties"]["sharpness"]
+
+
+def test_progress_fn_fires_per_frame(geotagged_dir):
+    calls = []
+    batch.process_directory(str(geotagged_dir),
+                            progress_fn=lambda done, total: calls.append((done, total)))
+    assert len(calls) == 5                       # every frame reported
+    assert calls[-1] == (5, 5)
+    assert [c[0] for c in calls] == [1, 2, 3, 4, 5]

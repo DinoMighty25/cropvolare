@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CropVolare Pro</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif;
+         background:#101410; color:#e8f0e8; }
+  header { display:flex; align-items:center; justify-content:space-between;
+           padding:12px 16px; background:#182018; }
+  header h1 { font-size:18px; margin:0; }
+  header a { color:#8fd08f; text-decoration:none; font-size:15px; }
+  main { padding:12px; max-width:560px; margin:0 auto; }
+  .card { background:#182018; border-radius:12px; padding:14px; margin-bottom:12px; }
+  .statusline { display:flex; justify-content:space-between; margin:4px 0; font-size:15px; }
+  .statusline span:first-child { color:#9ab09a; }
+  .badge { padding:2px 10px; border-radius:10px; font-weight:600; }
+  .badge.on  { background:#1d4d1d; color:#7dff7d; }
+  .badge.off { background:#4d1d1d; color:#ff9d9d; }
+  .btnrow { display:flex; gap:10px; margin-top:10px; }
+  button { flex:1; padding:16px 0; font-size:17px; font-weight:700; border:0;
+           border-radius:12px; cursor:pointer; }
+  #startBtn { background:#1f6e1f; color:#fff; }
+  #stopBtn  { background:#8e2424; color:#fff; }
+  button:disabled { opacity:.4; }
+  #preview { width:100%; border-radius:10px; background:#0b0e0b; min-height:120px; }
+  .toggle { display:flex; gap:8px; margin-bottom:8px; }
+  .toggle button { padding:8px 0; font-size:14px; background:#243024; color:#cfe0cf; }
+  .toggle button.active { background:#3a5a3a; color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { padding:6px 4px; text-align:left; border-bottom:1px solid #243024; }
+  #log { font-size:12px; color:#9ab09a; white-space:pre-wrap; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128760; CropVolare Pro</h1>
+  <span><a href="/">Home</a> &nbsp; <a href="/planner">Planner &rarr;</a></span>
+</header>
+<main>
+  <div class="card">
+    <div class="statusline"><span>Capture</span><span id="capBadge" class="badge off">&mdash;</span></div>
+    <div class="statusline"><span>Flight</span><span id="flight">&mdash;</span></div>
+    <div class="statusline"><span>Frames</span><span id="frames">&mdash;</span></div>
+    <div class="statusline"><span>Last frame</span><span id="age">&mdash;</span></div>
+    <div class="statusline"><span>Disk free</span><span id="disk">&mdash;</span></div>
+    <div class="statusline"><span>GPS</span><span id="gps">&mdash;</span></div>
+    <div class="btnrow">
+      <button id="startBtn" onclick="doStart()">START</button>
+      <button id="stopBtn" onclick="doStop()">STOP</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div class="card">
+    <div class="toggle">
+      <button id="rawBtn" class="active" onclick="setMode('raw')">Camera</button>
+      <button id="ndviBtn" onclick="setMode('ndvi')">NDVI</button>
+    </div>
+    <img id="preview" alt="no frames yet">
+    <div id="previewCap" style="font-size:12px;color:#9ab09a;margin-top:6px;">&mdash;</div>
+  </div>
+
+  <div class="card">
+    <b>Flights on card</b>
+    <table id="flights"><tr><th>flight</th><th>frames</th><th>MB</th></tr></table>
+  </div>
+</main>
+<script>
+let mode = 'raw';
+let capturing = false;
+let previewTimer = null;
+function setMode(m) {
+  mode = m;
+  document.getElementById('rawBtn').classList.toggle('active', m==='raw');
+  document.getElementById('ndviBtn').classList.toggle('active', m==='ndvi');
+  refreshPreview();
+}
+function refreshPreview() {
+  // capturing: poll the newest saved flight frame (no camera use).
+  // idle: continuous MJPEG live stream - one connection, real motion; the
+  // server owns camera handoff so capture can always take the camera.
+  clearTimeout(previewTimer);
+  const img = document.getElementById('preview');
+  const cap = document.getElementById('previewCap');
+  if (capturing) {
+    const url = (mode==='raw' ? '/api/preview.jpg' : '/api/preview_ndvi.jpg')
+                + '?t=' + Date.now();
+    img.onload = () => {
+      cap.textContent = 'latest flight frame';
+      previewTimer = setTimeout(refreshPreview, 2500);
+    };
+    img.onerror = () => {
+      cap.textContent = 'no frames yet';
+      previewTimer = setTimeout(refreshPreview, 4000);
+    };
+    img.src = url;
+  } else {
+    // MJPEG: the browser keeps rendering frames from this one request.
+    // onerror fires if the stream drops (WiFi blip, camera busy) -> retry.
+    img.onload = () => { cap.textContent = 'LIVE viewfinder'; };
+    img.onerror = () => {
+      cap.textContent = 'viewfinder reconnecting…';
+      previewTimer = setTimeout(refreshPreview, 3000);
+    };
+    img.src = '/api/stream.mjpg' + (mode==='ndvi' ? '?ndvi=1&' : '?')
+              + 't=' + Date.now();
+  }
+}
+async function refreshStatus() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    if (s.capturing !== capturing) {   // mode changed: re-aim the preview
+      capturing = s.capturing;
+      refreshPreview();
+    }
+    const b = document.getElementById('capBadge');
+    b.textContent = s.capturing ? 'CAPTURING' : 'stopped';
+    b.className = 'badge ' + (s.capturing ? 'on' : 'off');
+    document.getElementById('flight').textContent = s.flight || '—';
+    document.getElementById('frames').textContent = s.frames;
+    document.getElementById('age').textContent =
+      s.last_frame_age_s == null ? '—' : s.last_frame_age_s + 's ago';
+    document.getElementById('disk').textContent =
+      s.disk_free_mb == null ? '—' : (s.disk_free_mb/1024).toFixed(1) + ' GB';
+    document.getElementById('gps').textContent = s.gps
+      ? s.gps.lat.toFixed(5) + ', ' + s.gps.lon.toFixed(5) : 'no fix / not wired';
+    document.getElementById('startBtn').disabled = s.capturing;
+    document.getElementById('stopBtn').disabled = !s.capturing;
+  } catch (e) { /* pi unreachable; keep last values */ }
+}
+async function refreshFlights() {
+  try {
+    const list = await (await fetch('/api/flights')).json();
+    const t = document.getElementById('flights');
+    t.innerHTML = '<tr><th>flight</th><th>frames</th><th>MB</th></tr>' +
+      list.map(f => `<tr><td>${f.name}</td><td>${f.n_frames}</td><td>${f.size_mb}</td></tr>`).join('');
+  } catch (e) {}
+}
+async function doStart() {
+  document.getElementById('log').textContent = 'starting…';
+  const r = await fetch('/api/start', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:'{}'});
+  const j = await r.json();
+  document.getElementById('log').textContent = j.log.join('\n');
+  refreshStatus(); refreshFlights();
+}
+async function doStop() {
+  document.getElementById('log').textContent = 'stopping…';
+  const r = await fetch('/api/stop', {method:'POST'});
+  const j = await r.json();
+  document.getElementById('log').textContent = j.log.join('\n');
+  refreshStatus(); refreshFlights();
+}
+refreshStatus(); refreshFlights(); refreshPreview();
+setInterval(refreshStatus, 2000);
+setInterval(refreshFlights, 10000);
+// preview refresh is self-scheduling (see refreshPreview)
+</script>
+</body>
+</html>

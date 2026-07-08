@@ -101,3 +101,59 @@ def test_latest_frame_skips_empty(tmp_path):
 
 def test_latest_frame_none_when_empty(tmp_path):
     assert flightctl.latest_frame(str(tmp_path)) is None
+
+
+# --- storage autopilot -------------------------------------------------------
+
+def _mk_flight(base, name, frames, processed=False, mtime=None):
+    import cv2
+    import numpy as np
+    d = base / name
+    d.mkdir(parents=True)
+    img = np.zeros((16, 16, 3), np.uint8)
+    for i in range(frames):
+        cv2.imwrite(str(d / f"frame_{i:04d}.jpg"), img)
+    if processed:
+        a = d / "analysis"
+        a.mkdir()
+        (a / "report.pdf").write_bytes(b"%PDF fake")
+    if mtime:
+        os.utime(str(d), (mtime, mtime))
+    return d
+
+
+def test_autopilot_purges_trivial_captures_only(tmp_path):
+    base = tmp_path / "flights"
+    _mk_flight(base, "real", 20, mtime=1000)
+    _mk_flight(base, "junk", 3, mtime=2000)
+    deleted = flightctl.storage_autopilot(str(base),
+                                          free_mb_fn=lambda: 999999,
+                                          log_fn=lambda *_: None)
+    assert deleted == ["junk"]
+    assert not (base / "junk").exists()
+    assert (base / "real").exists()
+
+
+def test_autopilot_reclaims_oldest_processed_when_low(tmp_path):
+    base = tmp_path / "flights"
+    _mk_flight(base, "old_done", 20, processed=True, mtime=1000)
+    _mk_flight(base, "unprocessed", 20, mtime=2000)
+    _mk_flight(base, "new_done", 20, processed=True, mtime=3000)
+    free = iter([100, 999999])       # low until one deletion frees space
+    deleted = flightctl.storage_autopilot(str(base),
+                                          free_mb_fn=lambda: next(free),
+                                          log_fn=lambda *_: None)
+    assert deleted == ["old_done"]   # oldest processed dies first
+    assert (base / "unprocessed").exists()   # raw data is never deleted
+    assert (base / "new_done").exists()
+
+
+def test_autopilot_never_touches_active_flight(tmp_path):
+    base = tmp_path / "flights"
+    act = _mk_flight(base, "active", 2, mtime=1000)   # tiny AND active
+    flightctl.write_meta(str(base), {"dir": str(act), "pid": None})
+    deleted = flightctl.storage_autopilot(str(base),
+                                          free_mb_fn=lambda: 999999,
+                                          log_fn=lambda *_: None)
+    assert deleted == []
+    assert act.exists()

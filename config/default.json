@@ -30,7 +30,17 @@
   },
   "gcs": {
     "port": 8080,
-    "gps_port": null
+    "gps_port": null,
+    "auto_process": true,
+    "auto_process_min_frames": 50,
+    "default_field": null
+  },
+  "processing": {
+    "scale": 0.5
+  },
+  "storage": {
+    "min_free_mb": 2048,
+    "min_keep_frames": 15
   },
   "field": {
     "cell_meters": 20.0,

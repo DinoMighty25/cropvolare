@@ -265,3 +265,163 @@ def test_track_with_injected_gps(tmp_path):
     assert len(j["fixes"]) == 1
     s = c.get("/api/status").get_json()
     assert s["gps"]["lat"] == pytest.approx(40.00003)
+
+
+# --- on-device processing + reports + ops ------------------------------------
+
+class _FakeRunner:
+    """Stands in for jobs.JobRunner: records start() calls."""
+
+    def __init__(self, start_ok=True, err=None):
+        self.calls = []
+        self.start_ok = start_ok
+        self.err = err
+        self._status = {"state": "idle", "flight": None, "pct": 0,
+                        "eta_s": None, "verdict": None, "error": None}
+
+    def start(self, flight, field=None):
+        self.calls.append((flight, field))
+        if not self.start_ok:
+            return False, self.err
+        self._status.update(state="running", flight=flight)
+        return True, None
+
+    def status(self):
+        return dict(self._status)
+
+
+def _proc_app(tmp_path, runner, config=None, shutdown_fn=None):
+    app = gcs.create_app(base=str(tmp_path / "flights"),
+                         fields_dir=str(tmp_path / "fields"),
+                         start_fn=lambda base, **kw: 0,
+                         stop_fn=lambda base, **kw: 0,
+                         config=config if config is not None else {"ndvi": {}},
+                         runner=runner,
+                         shutdown_fn=shutdown_fn or (lambda: 0),
+                         version="abc1234 2026-07-08")
+    app.testing = True
+    return app.test_client()
+
+
+def test_farmer_pages_and_manifest(client):
+    assert b"CropVolare" in client.get("/").data
+    assert client.get("/pro").status_code == 200
+    assert client.get("/report").status_code == 200
+    m = client.get("/manifest.json").get_json()
+    assert m["name"] == "CropVolare"
+    assert m["display"] == "standalone"
+    assert client.get("/static/icon-192.png").status_code == 200
+
+
+def test_process_endpoints(tmp_path):
+    runner = _FakeRunner()
+    c = _proc_app(tmp_path, runner)
+    r = c.post("/api/process/f1", json={"field": "yard"})
+    assert r.status_code == 200
+    assert runner.calls == [("f1", "yard")]
+    s = c.get("/api/process").get_json()
+    assert s["state"] == "running" and s["flight"] == "f1"
+
+
+def test_process_validates_names(tmp_path):
+    runner = _FakeRunner()
+    c = _proc_app(tmp_path, runner)
+    assert c.post("/api/process/a b").status_code == 400        # bad flight
+    r = c.post("/api/process/f1", json={"field": "../evil"})
+    assert r.status_code == 400                                  # bad field
+    assert runner.calls == []
+
+
+def test_process_maps_runner_errors_to_http(tmp_path):
+    c = _proc_app(tmp_path, _FakeRunner(start_ok=False,
+                                        err="unknown flight: f9"))
+    assert c.post("/api/process/f9").status_code == 404
+    c = _proc_app(tmp_path, _FakeRunner(start_ok=False,
+                                        err="a processing job is already running"))
+    assert c.post("/api/process/f1").status_code == 409
+
+
+def test_stop_triggers_auto_process(tmp_path):
+    from cropvolare import flightctl
+    runner = _FakeRunner()
+    d = _add_flight(tmp_path, "big", frames=55)
+    flightctl.write_meta(str(tmp_path / "flights"), {"dir": str(d), "pid": None})
+    c = _proc_app(tmp_path, runner,
+                  config={"gcs": {"auto_process": True,
+                                  "auto_process_min_frames": 50,
+                                  "default_field": "home"}})
+    j = c.post("/api/stop").get_json()
+    assert j["ok"] is True
+    assert j["processing"] is True
+    assert runner.calls == [("big", "home")]
+
+
+def test_stop_skips_auto_process_for_small_captures(tmp_path):
+    from cropvolare import flightctl
+    runner = _FakeRunner()
+    d = _add_flight(tmp_path, "tiny", frames=3)
+    flightctl.write_meta(str(tmp_path / "flights"), {"dir": str(d), "pid": None})
+    c = _proc_app(tmp_path, runner, config={"gcs": {"auto_process": True}})
+    j = c.post("/api/stop").get_json()
+    assert j["processing"] is False
+    assert runner.calls == []
+
+
+def test_stop_respects_auto_process_off(tmp_path):
+    from cropvolare import flightctl
+    runner = _FakeRunner()
+    d = _add_flight(tmp_path, "big", frames=55)
+    flightctl.write_meta(str(tmp_path / "flights"), {"dir": str(d), "pid": None})
+    c = _proc_app(tmp_path, runner, config={"gcs": {"auto_process": False}})
+    j = c.post("/api/stop").get_json()
+    assert j["processing"] is False
+    assert runner.calls == []
+
+
+def test_reports_listing_and_artifacts(tmp_path):
+    c = _proc_app(tmp_path, _FakeRunner())
+    adir = tmp_path / "flights" / "f1" / "analysis"
+    os.makedirs(str(adir))
+    with open(str(adir / "result.json"), "w") as f:
+        json.dump({"date": "2026-07-08", "field": "yard", "n_frames": 5,
+                   "verdict": {"level": "fair", "score": 61, "line": "ok"},
+                   "distribution": {"mean": 0.41}}, f)
+    with open(str(adir / "report.pdf"), "wb") as f:
+        f.write(b"%PDF-1.4 fake")
+
+    rows = c.get("/api/reports").get_json()
+    assert len(rows) == 1
+    assert rows[0]["flight"] == "f1"
+    assert rows[0]["level"] == "fair"
+    assert rows[0]["has_pdf"] is True
+    assert c.get("/api/reports/f1/report.pdf").data.startswith(b"%PDF")
+    assert c.get("/api/reports/f1/result.json").get_json()["field"] == "yard"
+    assert c.get("/api/reports/nope/report.pdf").status_code == 404
+    assert c.get("/api/reports/a b/report.pdf").status_code == 400
+
+
+def test_shutdown_endpoint(tmp_path):
+    calls = []
+    c = _proc_app(tmp_path, _FakeRunner(),
+                  shutdown_fn=lambda: calls.append(1) or 0)
+    assert c.post("/api/shutdown").status_code == 200
+    assert calls == [1]
+
+
+def test_shutdown_refused_while_capturing(tmp_path):
+    from cropvolare import flightctl
+    d = _add_flight(tmp_path, "f1")
+    flightctl.write_meta(str(tmp_path / "flights"),
+                         {"dir": str(d), "pid": os.getpid()})  # "alive" pid
+    calls = []
+    c = _proc_app(tmp_path, _FakeRunner(),
+                  shutdown_fn=lambda: calls.append(1) or 0)
+    assert c.post("/api/shutdown").status_code == 409
+    assert calls == []
+
+
+def test_status_includes_version_and_processing(tmp_path):
+    c = _proc_app(tmp_path, _FakeRunner())
+    s = c.get("/api/status").get_json()
+    assert s["version"] == "abc1234 2026-07-08"
+    assert s["processing"]["state"] == "idle"
