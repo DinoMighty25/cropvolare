@@ -98,6 +98,29 @@ def test_flatfield_removes_ndvi_bullseye(tmp_path):
     assert spread_fixed < spread_raw / 3
 
 
+def test_brightness_and_source_path_in_properties(ndvi_jpeg_factory):
+    path = ndvi_jpeg_factory(40.0, -88.0, nir=200, red=80)
+    feat = batch.process_image(path)
+    p = feat["properties"]
+    assert p["source_path"] == path
+    assert 80 < p["brightness"] < 120   # (200+0+80)/3 ~ 93 mean
+
+
+def test_min_brightness_filters_dark_frames(geotagged_dir, tmp_path):
+    import cv2
+    import numpy as np
+    # a near-black frame: the post-landing / carry-home signature
+    dark = np.full((64, 64, 3), 6, dtype=np.uint8)
+    cv2.imwrite(str(geotagged_dir / "dark.jpg"), dark)
+
+    fc = batch.process_directory(str(geotagged_dir), min_brightness=25.0)
+    names = [f["properties"]["filename"] for f in fc["features"]]
+    assert "dark.jpg" not in names
+    assert fc["metadata"]["n_filtered"] == 1
+    assert fc["metadata"]["params"]["min_brightness"] == 25.0
+    assert len(names) == 5              # the normal fixture frames survive
+
+
 def test_process_directory_skips_unreadable(geotagged_dir):
     # a 0-byte / truncated JPEG (like a mid-write frame at capture stop) must
     # be skipped and counted, not crash the whole flight

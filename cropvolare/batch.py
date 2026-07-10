@@ -63,6 +63,7 @@ def process_image(path, gamma=0.8, leakage_k=0.6, block_size=64,
     if gain is not None:
         image = apply_flatfield(image, gain)
     sharpness = _sharpness(image)
+    brightness = float(image.mean())
     if process_scale and process_scale < 1.0:
         if cv2 is None:
             raise RuntimeError("opencv required for process_scale < 1.0")
@@ -89,12 +90,14 @@ def process_image(path, gamma=0.8, leakage_k=0.6, block_size=64,
 
     properties = {
         "filename": os.path.basename(path),
+        "source_path": path,
         "altitude_m": gps.get("alt") if gps_ok else None,
         "timestamp": gps.get("timestamp") if gps_ok else None,
         "mean_ndvi": round(float(ndvi.mean()), 4),
         "min_ndvi": round(float(ndvi.min()), 4),
         "max_ndvi": round(float(ndvi.max()), 4),
         "sharpness": round(sharpness, 1) if sharpness is not None else None,
+        "brightness": round(brightness, 1),
         "status": _image_status(zone_counts),
         "n_zones": len(zones),
         "zone_status_counts": zone_counts,
@@ -124,15 +127,18 @@ def _bbox(features):
 def process_directory(input_dir, gamma=0.8, leakage_k=0.6, block_size=64,
                       patterns=DEFAULT_PATTERNS, overlay_dir=None,
                       flight_date=None, generated=None, gain=None,
-                      min_sharpness=0.0, process_scale=1.0, progress_fn=None):
+                      min_sharpness=0.0, min_brightness=0.0,
+                      process_scale=1.0, progress_fn=None):
     """Process every photo in input_dir into a GeoJSON FeatureCollection.
 
     Untagged photos are still processed (NDVI computed) but kept with a null
     geometry and counted in metadata.n_untagged so nothing is silently dropped.
     gain, if given, flat-fields every frame before NDVI. min_sharpness > 0
     drops frames below that sharpness (grounded/defocused captures - focus is
-    locked at infinity, so near-ground frames are featureless blur); dropped
-    frames are counted in metadata.n_filtered.
+    locked at infinity, so near-ground frames are featureless blur);
+    min_brightness > 0 drops near-dark frames (post-landing ground shots and
+    carry-home footage read NDVI -0.8 and poison the verdict - a real flight
+    ended with exactly that). Dropped frames count in metadata.n_filtered.
 
     process_scale < 1.0 shrinks each frame before the NDVI math (see
     process_image) - the on-device fast path. progress_fn(done, total), if
@@ -173,6 +179,9 @@ def process_directory(input_dir, gamma=0.8, leakage_k=0.6, block_size=64,
         if min_sharpness and sharpness is not None and sharpness < min_sharpness:
             n_filtered += 1
             continue
+        if min_brightness and feature["properties"]["brightness"] < min_brightness:
+            n_filtered += 1
+            continue
         features.append(feature)
 
     tagged = [f for f in features if f.get("geometry")]
@@ -193,6 +202,7 @@ def process_directory(input_dir, gamma=0.8, leakage_k=0.6, block_size=64,
                 "leakage_k": leakage_k,
                 "block_size": block_size,
                 "min_sharpness": min_sharpness,
+                "min_brightness": min_brightness,
                 "flatfield": gain is not None,
                 "process_scale": process_scale,
             },

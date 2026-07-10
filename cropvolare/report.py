@@ -393,10 +393,16 @@ def build_agronomy_report(result, out_path, fieldmap_png=None, trend=None):
                     pdf.add_page(); y = 15
                 for ci, wf in enumerate(worst[r:r + cols]):
                     x = x0 + ci * cw
-                    ov = wf.get("overlay_png")
-                    if ov and os.path.exists(ov):
+                    # show the actual PHOTO - "inspect what they show" needs
+                    # the scene, not an NDVI heat-blob (a worst frame's NDVI
+                    # render is a featureless solid-red square)
+                    img_path = wf.get("source_path")
+                    if not (img_path and os.path.exists(img_path)):
+                        img_path = wf.get("overlay_png")
+                    if img_path and os.path.exists(img_path):
                         try:
-                            pdf.image(_thumbnail(ov, thumb_dir), x=x + 2, y=y, w=tw)
+                            pdf.image(_thumbnail(img_path, thumb_dir),
+                                      x=x + 2, y=y, w=tw)
                         except Exception:  # noqa: BLE001
                             pass
                     pdf.set_xy(x + 2, y + tw + 1)

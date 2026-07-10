@@ -53,7 +53,8 @@ def load_config(path):
 
 def run(input_dir, outdir, config_path=DEFAULT_CONFIG, *, gamma=None,
         leakage_k=None, block_size=None, cell_meters=None, top_n=None,
-        min_sharpness=None, flatfield=None, no_flatfield=False,
+        min_sharpness=None, min_brightness=None, flatfield=None,
+        no_flatfield=False,
         write_overlays=True, field_name=None, basic=False, process_scale=1.0,
         progress_fn=None, log_fn=print):
     """The full flight -> report pipeline as one callable.
@@ -82,6 +83,8 @@ def run(input_dir, outdir, config_path=DEFAULT_CONFIG, *, gamma=None,
     opacity = field_cfg.get("overlay_opacity", 0.6)
     min_sharpness = (min_sharpness if min_sharpness is not None
                      else ndvi_cfg.get("min_sharpness", 0.0))
+    min_brightness = (min_brightness if min_brightness is not None
+                      else ndvi_cfg.get("min_brightness", 0.0))
 
     gain, ff_label = resolve_flatfield(flatfield, no_flatfield, cal_cfg)
     log_fn(f"flat-field: {ff_label}")
@@ -94,6 +97,7 @@ def run(input_dir, outdir, config_path=DEFAULT_CONFIG, *, gamma=None,
     fc = batch.process_directory(
         input_dir, gamma=gamma, leakage_k=leakage_k, block_size=block_size,
         overlay_dir=overlay_dir, gain=gain, min_sharpness=min_sharpness,
+        min_brightness=min_brightness,
         process_scale=process_scale, progress_fn=progress_fn,
         flight_date=now.date().isoformat(),
         generated=now.isoformat(),
@@ -101,7 +105,8 @@ def run(input_dir, outdir, config_path=DEFAULT_CONFIG, *, gamma=None,
     meta = fc["metadata"]
     log_fn(f"  {meta['n_images']} images kept "
            f"({meta['n_untagged']} untagged, {meta['n_unreadable']} unreadable, "
-           f"{meta['n_filtered']} filtered below sharpness {min_sharpness})")
+           f"{meta['n_filtered']} filtered: sharpness<{min_sharpness} "
+           f"or brightness<{min_brightness})")
 
     geojson_path = os.path.join(outdir, "field.geojson")
     with open(geojson_path, "w") as f:
@@ -197,6 +202,9 @@ def main():
     parser.add_argument("--min-sharpness", type=float,
                         help="drop frames below this sharpness (0 = keep all; "
                              "~15 filters grounded/defocused frames)")
+    parser.add_argument("--min-brightness", type=float,
+                        help="drop frames darker than this mean (0 = keep all; "
+                             "~25 filters post-landing/night frames)")
     parser.add_argument("--flatfield",
                         help="gain map .npy (default: calibration.flatfield_path "
                              "from the config)")
@@ -217,7 +225,8 @@ def main():
     run(args.input, args.outdir, config_path=args.config, gamma=args.gamma,
         leakage_k=args.leakage_k, block_size=args.block_size,
         cell_meters=args.cell_meters, top_n=args.top_n,
-        min_sharpness=args.min_sharpness, flatfield=args.flatfield,
+        min_sharpness=args.min_sharpness, min_brightness=args.min_brightness,
+        flatfield=args.flatfield,
         no_flatfield=args.no_flatfield, write_overlays=not args.no_overlays,
         field_name=args.field, basic=args.basic, process_scale=args.scale)
 

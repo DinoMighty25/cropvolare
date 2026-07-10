@@ -257,6 +257,8 @@ def analyze(feature_collection, grid=None, cells=None, field=None,
         "filename": f["properties"]["filename"],
         "mean_ndvi": f["properties"]["mean_ndvi"],
         "sharpness": f["properties"].get("sharpness"),
+        "brightness": f["properties"].get("brightness"),
+        "source_path": f["properties"].get("source_path"),
         "overlay_png": f["properties"].get("overlay_png"),
     } for f in worst]
 
