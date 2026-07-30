@@ -18,15 +18,88 @@ scripts/tag_gps.py (e.g. against a recorded track), then run process_flight.py.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cropvolare import geo
+from cropvolare import exposure, geo
 from cropvolare.gpsread import GpsReader
 from cropvolare.ndvi import capture_frame, create_camera, lock_exposure
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG = os.path.join(REPO, "config", "default.json")
+
+
+def load_config(path):
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def open_camera(cfg, preset_name=None, warmup=2.0, log_fn=print):
+    """Create and start the camera, returning (cam, capture_meta dict).
+
+    With preset_name, the exposure/gain/colour-gains come from the config and are
+    hard-locked before the first frame - that is what makes this flight
+    comparable to other days. Without it, auto-exposure settles and is frozen for
+    the session only (fine for a test hop, useless for cross-flight comparison),
+    and the metadata records locked="auto" so compare_flights.py can say so.
+    """
+    cam_cfg = cfg.get("camera", {})
+    resolution = tuple(cam_cfg.get("resolution", (2304, 1296)))
+    colour_gains = tuple(cam_cfg.get("colour_gains", (1.0, 1.0)))
+
+    preset = None
+    if preset_name:
+        preset = exposure.get_preset(cfg, preset_name)   # raises with a helpful list
+        if preset.get("colour_gains"):
+            colour_gains = tuple(preset["colour_gains"])
+
+    cam = None
+    for attempt in range(3):
+        try:
+            cam = create_camera(
+                resolution=resolution, colour_gains=colour_gains,
+                exposure_us=(preset["exposure_us"] if preset else None))
+            break
+        except Exception as exc:  # noqa: BLE001 - e.g. viewfinder still releasing it
+            if attempt == 2:
+                raise
+            log_fn(f"camera busy ({exc}); retrying in 3s ...")
+            time.sleep(3)
+
+    cam.start()
+
+    if preset:
+        # create_camera() sets ExposureTime but not gain; set both explicitly so
+        # nothing is left to the ISP's discretion.
+        cam.set_controls({
+            "AeEnable": False,
+            "ExposureTime": int(preset["exposure_us"]),
+            "AnalogueGain": float(preset["analogue_gain"]),
+        })
+        time.sleep(max(warmup, 1.0))   # let the locked values take effect
+        exp = int(preset["exposure_us"])
+        gain = float(preset["analogue_gain"])
+        log_fn(f"exposure LOCKED to preset {preset_name!r}: "
+               f"{exp} us, gain {gain:.2f}")
+        meta = exposure.capture_meta(preset_name, exp, gain,
+                                     colour_gains=colour_gains, locked="preset")
+    else:
+        time.sleep(warmup)               # auto-exposure settles on the scene
+        exp, gain = lock_exposure(cam)   # then freeze for the whole flight
+        log_fn(f"exposure auto-locked: {exp} us, gain {gain:.2f}")
+        log_fn("WARNING: no --preset, so this flight is NOT comparable to other "
+               "flights. Fine for a test hop; not for data.")
+        meta = exposure.capture_meta(None, exp, gain,
+                                     colour_gains=colour_gains, locked="auto")
+
+    meta["resolution"] = list(resolution)
+    return cam, meta
 
 
 def _default_save(path, frame):
@@ -108,6 +181,11 @@ def main():
                         help="seconds to let the sensor settle before the first frame")
     parser.add_argument("--gps-port", default=None,
                         help="serial GPS port (e.g. /dev/serial0); omit to skip tagging")
+    parser.add_argument("--preset", default=None,
+                        help="named exposure preset from the config (e.g. full_sun). "
+                             "REQUIRED for data flights: without it auto-exposure "
+                             "settles per flight and flights are not comparable")
+    parser.add_argument("--config", default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
     n_frames = None if args.count <= 0 else args.count
@@ -120,20 +198,17 @@ def main():
                         track_path=os.path.join(args.outdir, "track.csv")).start()
 
     print("initializing camera ...")
-    cam = None
-    for attempt in range(3):
-        try:
-            cam = create_camera()
-            break
-        except Exception as exc:  # noqa: BLE001 - e.g. viewfinder still releasing it
-            if attempt == 2:
-                raise
-            print(f"camera busy ({exc}); retrying in 3s ...")
-            time.sleep(3)
-    cam.start()
-    time.sleep(args.warmup)          # auto-exposure settles on the scene
-    exp, gain = lock_exposure(cam)   # then freeze for the whole flight
-    print(f"exposure locked: {exp} us, gain {gain:.2f}")
+    cfg = load_config(args.config)
+    try:
+        cam, meta = open_camera(cfg, preset_name=args.preset, warmup=args.warmup)
+    except exposure.PresetError as exc:
+        print(f"error: {exc}")
+        return 1
+
+    os.makedirs(args.outdir, exist_ok=True)
+    meta_path = exposure.write_capture_meta(args.outdir, meta)
+    print(f"wrote {os.path.basename(meta_path)} (exposure audit trail)")
+
     print(f"capturing {'until Ctrl+C' if n_frames is None else n_frames} "
           f"frame(s), one every {args.interval}s -> {args.outdir}")
 
@@ -160,7 +235,8 @@ def main():
         cam.stop()
         if gps:
             gps.stop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

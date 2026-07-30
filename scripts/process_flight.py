@@ -17,12 +17,13 @@ process flights ON the Pi, so the CLI and the on-device path can never drift.
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cropvolare import analyze, batch, field, fieldmap, history, report, webmap
+from cropvolare import analyze, batch, exposure, field, fieldmap, history, report, webmap
 from cropvolare.ndvi import load_flatfield
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +108,22 @@ def run(input_dir, outdir, config_path=DEFAULT_CONFIG, *, gamma=None,
            f"({meta['n_untagged']} untagged, {meta['n_unreadable']} unreadable, "
            f"{meta['n_filtered']} filtered: sharpness<{min_sharpness} "
            f"or brightness<{min_brightness})")
+
+    # Carry the exposure audit trail from the flight folder into the processed
+    # output, so compare_flights.py can verify the two flights used identical
+    # settings without also needing the original photo folders.
+    src_meta = os.path.join(input_dir, exposure.META_NAME)
+    if os.path.exists(src_meta):
+        shutil.copy2(src_meta, os.path.join(outdir, exposure.META_NAME))
+        cap = exposure.read_capture_meta(src_meta) or {}
+        if cap.get("locked") == "preset":
+            log_fn(f"exposure: preset {cap.get('preset')!r} "
+                   f"({cap.get('exposure_us')} us, gain {cap.get('analogue_gain')})")
+        else:
+            log_fn("exposure: auto-locked (NOT comparable to other flights)")
+    else:
+        log_fn(f"exposure: no {exposure.META_NAME} in the flight folder "
+               f"(pre-preset flight?)")
 
     geojson_path = os.path.join(outdir, "field.geojson")
     with open(geojson_path, "w") as f:
