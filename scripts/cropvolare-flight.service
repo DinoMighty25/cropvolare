@@ -10,6 +10,20 @@
 #   python scripts/fly.py stop        (or: sudo systemctl stop cropvolare-flight)
 # Disable boot capture again with:
 #   sudo systemctl disable cropvolare-flight
+#
+# The --preset below is REQUIRED, and it is deliberately not optional. Without it
+# a power-on capture settles auto-exposure on whatever it sees, records
+# locked="auto", and compare_flights.py then refuses to report an error number -
+# so a data flight started by plugging the Pi in would be unusable, and you would
+# only find out after landing. Change the name to whichever preset matches the
+# light you are flying in (see: set_exposure_preset.py --list), then:
+#   sudo cp scripts/cropvolare-flight.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# If that preset does not exist yet, boot capture FAILS LOUDLY and captures
+# nothing (systemctl status shows the error). That is intentional: no data beats
+# uncomparable data you cannot re-collect. Measure it first:
+#   python scripts/set_exposure_preset.py full_sun --note "clear, near noon"
 
 [Unit]
 Description=CropVolare flight capture
@@ -19,7 +33,7 @@ After=multi-user.target
 Type=simple
 User=dinomighty
 WorkingDirectory=/home/dinomighty/cropvolare
-ExecStart=/usr/bin/python3 scripts/fly.py start --foreground
+ExecStart=/usr/bin/python3 scripts/fly.py start --foreground --preset full_sun
 Restart=no
 
 [Install]
