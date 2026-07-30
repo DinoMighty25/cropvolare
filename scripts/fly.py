@@ -31,6 +31,10 @@ def main():
                    help="frames to capture (0 = until stopped)")
     p.add_argument("--gps-port", default=None,
                    help="serial GPS port (e.g. /dev/serial0)")
+    p.add_argument("--preset", default=None,
+                   help="exposure preset from the config (e.g. full_sun). Use it "
+                        "for every data flight: it locks exposure to measured "
+                        "values so flights are comparable across days")
     p.add_argument("--foreground", action="store_true",
                    help="stay attached (for systemd boot mode)")
     p.add_argument("--skip-checks", action="store_true")
@@ -39,7 +43,8 @@ def main():
     if args.command == "start":
         sys.exit(flightctl.start(args.base, args.interval, args.count,
                                  args.gps_port, foreground=args.foreground,
-                                 skip_checks=args.skip_checks))
+                                 skip_checks=args.skip_checks,
+                                 preset=args.preset))
     elif args.command == "status":
         info = flightctl.status_info(args.base)
         if info["flight"] is None:
@@ -51,6 +56,10 @@ def main():
         age = (f"{info['last_frame_age_s']}s ago"
                if info["last_frame_age_s"] is not None else "none yet")
         print(f"frames:  {info['frames']} (last: {age})")
+        if info.get("preset"):
+            print(f"preset:  {info['preset']} (locked - comparable across flights)")
+        else:
+            print("preset:  NONE (auto-exposure - not comparable across flights)")
         sys.exit(0 if info["capturing"] else 1)
     else:
         rc = flightctl.stop(args.base)

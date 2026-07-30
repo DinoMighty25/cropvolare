@@ -17,12 +17,24 @@ import sys
 import time
 from datetime import datetime
 
+from . import exposure
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CAPTURE_SCRIPT = os.path.join(REPO, "scripts", "capture_flight.py")
+DEFAULT_CONFIG = os.path.join(REPO, "config", "default.json")
 ACTIVE_META = "active.json"  # lives in the flights base dir while capturing
 DEFAULT_BASE = os.path.join(REPO, "flights")
 
 MIN_FREE_MB = 200
+
+
+def _load_config(path=None):
+    path = path or DEFAULT_CONFIG
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 # --------------------------------------------------------------------------
@@ -195,6 +207,7 @@ def status_info(base, alive_fn=pid_alive):
         "capturing": alive_fn(meta.get("pid")),
         "flight": os.path.basename(d),
         "pid": meta.get("pid"),
+        "preset": meta.get("preset"),
         "frames": len(frames),
         "last_frame_age_s": (round(time.time() - os.path.getmtime(frames[-1]))
                              if frames else None),
@@ -203,16 +216,35 @@ def status_info(base, alive_fn=pid_alive):
 
 
 def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
-          skip_checks=False, log_fn=print, first_frame_timeout=90):
+          skip_checks=False, log_fn=print, first_frame_timeout=90, preset=None):
     """first_frame_timeout: seconds to wait for frame_0000 before reporting
     failure. The Zero 2 W needs ~30-45 s of process/camera spin-up, so the CLI
     default is generous. Pass 0 to return right after spawning (the GCS does -
-    its dashboard live-polls the frame counter instead of blocking)."""
+    its dashboard live-polls the frame counter instead of blocking).
+
+    preset names an exposure preset from the config. It is validated HERE,
+    before the capture process is spawned: capture runs detached with its output
+    going to a log file, so a mistyped preset would otherwise look like a
+    successful start and only surface as a missing first frame - in the field,
+    with the drone waiting.
+    """
     meta = read_meta(base)
     if meta and pid_alive(meta.get("pid")):
         log_fn(f"already capturing -> {meta['dir']} (pid {meta['pid']})")
         log_fn("stop the current run first")
         return 1
+
+    if preset:
+        try:
+            cfg = _load_config()
+            resolved = exposure.get_preset(cfg, preset)
+            log_fn(f"exposure preset {preset!r}: {exposure.describe(resolved)}")
+        except exposure.PresetError as exc:
+            log_fn(f"preset FAILED: {exc}")
+            return 1
+    else:
+        log_fn("no --preset: auto-exposure will settle per flight, so this "
+               "flight will NOT be comparable to other days")
 
     log_fn("preflight:")
     if not preflight(base, log_fn=log_fn) and not skip_checks:
@@ -225,6 +257,8 @@ def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
            "--count", n_frames_arg, "--interval", str(interval)]
     if gps_port:
         cmd += ["--gps-port", gps_port]
+    if preset:
+        cmd += ["--preset", preset]
 
     if foreground:
         # boot/systemd mode: stay attached; stop still works via STOP file
@@ -232,7 +266,7 @@ def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
         proc = subprocess.Popen(cmd)
         write_meta(base, {"dir": outdir, "pid": proc.pid,
                           "started": datetime.now().isoformat(timespec="seconds"),
-                          "interval": interval})
+                          "interval": interval, "preset": preset})
         try:
             return proc.wait()
         finally:
@@ -250,7 +284,7 @@ def start(base, interval=2.0, count=0, gps_port=None, foreground=False,
     proc = subprocess.Popen(cmd, **kwargs)
     write_meta(base, {"dir": outdir, "pid": proc.pid,
                       "started": datetime.now().isoformat(timespec="seconds"),
-                      "interval": interval})
+                      "interval": interval, "preset": preset})
 
     log_fn(f"capture started (pid {proc.pid}) -> {outdir}")
     if not first_frame_timeout:

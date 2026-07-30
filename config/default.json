@@ -46,5 +46,6 @@
     "min_patch_cells": 2,
     "trend_stable_delta": 0.03,
     "patch_match_radius_m": 30.0
-  }
+  },
+  "exposure_presets": {}
 }
