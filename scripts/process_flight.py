@@ -14,12 +14,13 @@ Produces, in --outdir:
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cropvolare import analyze, batch, field, fieldmap, history, report, webmap
+from cropvolare import analyze, batch, exposure, field, fieldmap, history, report, webmap
 from cropvolare.ndvi import load_flatfield
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -117,6 +118,22 @@ def main():
     print(f"  {meta['n_images']} images kept "
           f"({meta['n_untagged']} untagged, {meta['n_unreadable']} unreadable, "
           f"{meta['n_filtered']} filtered below sharpness {min_sharpness})")
+
+    # Carry the exposure audit trail from the flight folder into the processed
+    # output, so compare_flights.py can verify the two flights used identical
+    # settings without also needing the original photo folders.
+    src_meta = os.path.join(args.input, exposure.META_NAME)
+    if os.path.exists(src_meta):
+        shutil.copy2(src_meta, os.path.join(args.outdir, exposure.META_NAME))
+        cap = exposure.read_capture_meta(src_meta) or {}
+        if cap.get("locked") == "preset":
+            print(f"exposure: preset {cap.get('preset')!r} "
+                  f"({cap.get('exposure_us')} us, gain {cap.get('analogue_gain')})")
+        else:
+            print("exposure: auto-locked (NOT comparable to other flights)")
+    else:
+        print(f"exposure: no {exposure.META_NAME} in the flight folder "
+              f"(pre-preset flight?)")
 
     geojson_path = os.path.join(args.outdir, "field.geojson")
     with open(geojson_path, "w") as f:
