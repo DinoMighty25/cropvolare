@@ -18,8 +18,13 @@
 #        chmod +x ~/cropvolare/scripts/wittypi_before_shutdown.sh
 #   2. Hook it into the Witty Pi software:
 #        nano ~/wittypi/beforeShutdown.sh
-#      and add this line:
-#        /home/pi/cropvolare/scripts/wittypi_before_shutdown.sh
+#      and add the ABSOLUTE path to this script. Print it rather than typing it,
+#      because it depends on the account the repo lives under:
+#        realpath ~/cropvolare/scripts/wittypi_before_shutdown.sh
+#      e.g. /home/dinomighty/cropvolare/scripts/wittypi_before_shutdown.sh
+#      A wrong path here fails silently - Witty Pi cuts power with the capture
+#      still running, which is the exact loss this hook exists to prevent, so
+#      verify with step 4 rather than assuming.
 #   3. Set the voltage thresholds in the Witty Pi menu (sudo ~/wittypi/wittyPi.sh):
 #        low voltage threshold      3.4 V   (shut down below this)
 #        recovery voltage threshold 3.7 V   (boot again above this)
@@ -47,12 +52,30 @@ log "low-battery shutdown requested"
 
 # Record the voltage if the Witty Pi utilities are available - turns "why did it
 # die?" into a number you can read afterwards.
-if [ -r /home/pi/wittypi/utilities.sh ]; then
+#
+# Witty Pi installs under whichever account was used, so its path is not
+# knowable up front. Probe instead of hardcoding /home/pi: the first candidate is
+# a sibling of this repo, which is the reliable one because beforeShutdown.sh
+# runs as ROOT during shutdown - $HOME is /root there, not the owning user's
+# home, so anything $HOME-derived would miss.
+if [ -z "${WITTYPI_DIR:-}" ]; then
+    for _d in "$(dirname "$REPO")/wittypi" "$HOME/wittypi" \
+              /home/pi/wittypi /opt/wittypi; do
+        if [ -r "$_d/utilities.sh" ]; then
+            WITTYPI_DIR="$_d"
+            break
+        fi
+    done
+fi
+
+if [ -n "${WITTYPI_DIR:-}" ] && [ -r "$WITTYPI_DIR/utilities.sh" ]; then
     # shellcheck disable=SC1091
-    . /home/pi/wittypi/utilities.sh 2>/dev/null || true
+    . "$WITTYPI_DIR/utilities.sh" 2>/dev/null || true
     if command -v get_input_voltage >/dev/null 2>&1; then
         log "input voltage: $(get_input_voltage 2>/dev/null || echo unknown) V"
     fi
+else
+    log "wittypi utilities not found - no voltage logged (set WITTYPI_DIR)"
 fi
 
 ACTIVE="$REPO/flights/active.json"
