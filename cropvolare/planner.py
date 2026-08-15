@@ -193,3 +193,80 @@ def to_litchi_csv(lines, altitude_m):
     for lat, lon in waypoints(lines):
         rows.append(f"{lat:.7f},{lon:.7f},{altitude_m},0,0,0,2,-90")
     return "\n".join(rows) + "\n"
+
+
+def interval_for_overlap(altitude_m, speed_mps, target_overlap=0.75,
+                         vfov_deg=DEFAULT_VFOV_DEG):
+    """Capture interval (s) needed to hit a forward overlap at a given speed.
+
+    The camera is not triggered by the flight controller, so overlap is set
+    purely by interval x ground speed against the along-track footprint. At
+    30 m AGL that footprint is only ~22 m, so a 5 s interval cannot stitch at
+    any usable speed - this is the check that catches it before the flight.
+    """
+    forward_fp = 2.0 * altitude_m * math.tan(math.radians(vfov_deg) / 2.0)
+    if speed_mps <= 0:
+        raise ValueError("speed must be > 0")
+    return forward_fp * (1.0 - target_overlap) / speed_mps
+
+
+def overlap_warnings(altitude_m, speed_mps, interval_s,
+                     vfov_deg=DEFAULT_VFOV_DEG, stitch_overlap=0.75):
+    """Human-readable pre-flight verdict on forward overlap. [] means fine."""
+    forward_fp = 2.0 * altitude_m * math.tan(math.radians(vfov_deg) / 2.0)
+    overlap = 1.0 - (speed_mps * interval_s) / forward_fp
+    msgs = []
+    if overlap < 0:
+        msgs.append(
+            f"GAPS: at {speed_mps} m/s and {interval_s}s the drone moves "
+            f"{speed_mps * interval_s:.0f} m between frames but only sees "
+            f"{forward_fp:.0f} m. Parts of the field get no coverage at all.")
+    elif overlap < stitch_overlap:
+        need = interval_for_overlap(altitude_m, speed_mps, stitch_overlap, vfov_deg)
+        msgs.append(
+            f"forward overlap {overlap * 100:.0f}% is below the "
+            f"{stitch_overlap * 100:.0f}% stitching needs. Drop the interval to "
+            f"{need:.1f}s, slow to {forward_fp * (1 - stitch_overlap) / interval_s:.1f} m/s, "
+            f"or climb.")
+    return msgs
+
+
+def to_qgc_wpl(lines, altitude_m, speed_mps=None, home=None, takeoff=True, rtl=True):
+    """QGroundControl WPL 110 .waypoints file - the format Mission Planner reads.
+
+    This is the ArduPilot/ArduCopter path (your Iris), as opposed to to_kml and
+    to_litchi_csv which target DJI apps. Load the saved file in Mission Planner
+    via Flight Plan -> Load WP File, review it, then Write WPs.
+
+    Builds: home, optional TAKEOFF, optional DO_CHANGE_SPEED, every survey
+    waypoint at altitude_m, then optional RTL. Altitudes are relative to home
+    (frame 3), which is what Mission Planner shows by default.
+
+    speed_mps pins ground speed via DO_CHANGE_SPEED - important here because the
+    camera is not triggered by the flight controller, so forward overlap depends
+    entirely on holding the speed that plan_stats assumed.
+    """
+    pts = waypoints(lines)
+    if not pts:
+        raise ValueError("no waypoints to export")
+    home_lat, home_lon = home if home else pts[0]
+
+    rows, seq = [], 0
+
+    def add(frame, cmd, p1, p2, p3, p4, lat, lon, alt, current=0):
+        nonlocal seq
+        rows.append(f"{seq}\t{current}\t{frame}\t{cmd}\t{p1:.6f}\t{p2:.6f}\t"
+                    f"{p3:.6f}\t{p4:.6f}\t{lat:.8f}\t{lon:.8f}\t{alt:.6f}\t1")
+        seq += 1
+
+    add(0, 16, 0, 0, 0, 0, home_lat, home_lon, 0, current=1)   # home
+    if takeoff:
+        add(3, 22, 0, 0, 0, 0, home_lat, home_lon, altitude_m)  # NAV_TAKEOFF
+    if speed_mps:
+        add(3, 178, 1, speed_mps, -1, 0, 0, 0, 0)               # DO_CHANGE_SPEED
+    for lat, lon in pts:
+        add(3, 16, 0, 0, 0, 0, lat, lon, altitude_m)            # NAV_WAYPOINT
+    if rtl:
+        add(3, 20, 0, 0, 0, 0, 0, 0, 0)                         # RETURN_TO_LAUNCH
+
+    return "QGC WPL 110\n" + "\n".join(rows) + "\n"

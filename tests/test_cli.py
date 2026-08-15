@@ -230,20 +230,39 @@ def test_process_flight_min_sharpness_filters(geotagged_dir, tmp_path):
 def test_calibrate_solves_and_writes_config(tmp_path):
     import cv2
     import numpy as np
-    grey = np.zeros((64, 64, 3), dtype=np.uint8)
-    grey[:, :, 0] = 100   # NIR
-    grey[:, :, 2] = 160   # red with 0.6 bleed
-    card = str(tmp_path / "grey.png")   # png: lossless, exact k
-    cv2.imwrite(card, grey)
+    # neutral anchor: red reads k*NIR + red_gain*REF. With NIR=REF=100/255 and
+    # red=160/255, k=1.0 => red_gain = 0.6 at assumed_ndvi=0.
+    anchor = np.zeros((64, 64, 3), dtype=np.uint8)
+    anchor[:, :, 0] = 100   # NIR
+    anchor[:, :, 2] = 160   # red = 1.0*NIR + 0.6*REF
+    card = str(tmp_path / "anchor.png")   # png: lossless, exact gain
+    cv2.imwrite(card, anchor)
     cfg_path = tmp_path / "cfg.json"
-    cfg_path.write_text(json.dumps({"ndvi": {"leakage_k": 0.6}}))
+    cfg_path.write_text(json.dumps({"ndvi": {"leakage_k": 2.0}}))
 
     result = run_script("calibrate.py", "--input", card, "--gamma", "1.0",
+                        "--anchor", "ptfe", "--assumed-ndvi", "0.0",
                         "--config", str(cfg_path), "--write")
     assert result.returncode == 0, result.stderr
-    assert "solved leakage_k = 0.6" in result.stdout
+    assert "red_gain = 0.6" in result.stdout
     cfg = json.loads(cfg_path.read_text())
-    assert cfg["ndvi"]["leakage_k"] == 0.6
+    assert cfg["ndvi"]["red_gain"] == 0.6
+    assert cfg["ndvi"]["leakage_k"] == 1.0
+
+
+def test_calibrate_rejects_clipped_anchor(tmp_path):
+    """A blown-out target corrupts the channel ratio - must not silently pass."""
+    import cv2
+    import numpy as np
+    blown = np.full((64, 64, 3), 255, dtype=np.uint8)
+    card = str(tmp_path / "blown.png")
+    cv2.imwrite(card, blown)
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps({"ndvi": {}}))
+    result = run_script("calibrate.py", "--input", card, "--anchor", "ptfe",
+                        "--config", str(cfg_path), "--write")
+    assert result.returncode != 0
+    assert "clipped" in result.stdout.lower()
 
 
 # --- ground_station (laptop helper) ----------------------------------------

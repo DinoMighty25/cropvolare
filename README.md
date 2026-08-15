@@ -88,22 +88,53 @@ the blue channel reads NIR and the red channel reads visible red. Don't use a
 720nm+ "IR-only" filter (kills the red channel) or a blue "superblue" filter
 (opposite channel mapping).
 
-With the filter mounted, calibrate the NIR-bleed correction from one photo of a
-neutral grey card (photography 18% grey card, in the light you'll fly in):
+Two constants describe the rig, and they are **different physical effects**:
 
-```bash
-# on the Pi: photograph the grey card filling the frame
-python scripts/capture_flight.py -o calib --count 1
+| constant | what it is | how it applies |
+| --- | --- | --- |
+| `leakage_k` | NIR bleeding through the filter into the red pixel | subtracted |
+| `red_gain` | red pixel's sensitivity to visible red, relative to the blue pixel's to NIR | divided |
 
-# solve the leakage constant and save it into the config
-python scripts/calibrate.py --input calib/frame_0000.jpg --write
+Solving only one of them (the old behaviour) conflates the two and drives the
+red channel to zero over vegetation, which pins healthy canopy at NDVI = 1.0.
+On real flight frames that silently flattened **36% of vegetated pixels** into a
+single value — a field that looks uniformly healthy no matter what is growing.
 
-# optional sanity check: a healthy plant should read ~0.4-0.6
-python scripts/calibrate.py --input calib/frame_0000.jpg --plant plant.jpg
+**Calibrate from crop photos you already have (no target needed).** Any frame
+containing both canopy and bare ground gives two equations, which solves both
+constants at once:
+
+```
+python scripts/calibrate.py --two-point flights/2026-07-30/ --write
 ```
 
-Every capture and analysis run reads the saved value from
-`config/default.json` automatically. Re-calibrate if you change the filter.
+It averages across frames, reports the frame-to-frame spread, and cross-checks
+the solved `leakage_k` against the green/blue channel ratio — two independent
+routes to the same number. If they disagree, it says so.
+
+**Or calibrate from a neutral target.** What matters is spectral neutrality
+between red and NIR, *not* 18% reflectance — the constants come from a ratio, so
+any brightness works provided neither channel clips:
+
+```
+python scripts/calibrate.py --input calib/frame_0000.jpg --anchor ptfe --write
+```
+
+| `--anchor` | target | notes |
+| --- | --- | --- |
+| `ptfe` | plumber's PTFE tape over card | same material as Spectralon standards |
+| `paper` | white printer paper, open shade | brighteners emit ~440nm, filter blocks it |
+| `concrete` | dry pavement | already in most farm scenes |
+| `asphalt` | dry road | not freshly laid |
+
+Clipped targets are rejected automatically — a blown channel corrupts the ratio.
+
+**Diagnose an existing flight** (saturation + whether the channel assumptions
+hold on your rig) without any calibration data at all:
+
+```
+python scripts/diagnose_ndvi.py --dir flights/2026-07-30/
+```
 
 **Flat-field (removes the NDVI "bullseye").** The lens shades the NIR and red
 channels unequally, which paints a false radial health gradient on every frame.
@@ -142,7 +173,11 @@ Then from your phone (hotspot): **`http://<pi-ip>:8080`**
 - **Field planner** (`/planner`) — tap the map to outline a field, set
   altitude/overlap, and get the lawnmower survey pattern with distance/time/
   frame estimates and a too-fast overlap warning. Fields are saved and reused.
-  Export the pattern as **KML** or **Litchi CSV** for DJI waypoint apps.
+  Export the pattern as **QGC WPL `.waypoints`** for Mission Planner / ArduPilot
+(the Iris path — *Flight Plan → Load WP File*, review, then *Write WPs*), or as
+**KML** / **Litchi CSV** for DJI waypoint apps. The WPL export pins ground speed
+with `DO_CHANGE_SPEED`, which is what keeps forward overlap at the planned
+value.
 - **Live coverage** — once a serial GPS is wired (`gcs.gps_port` in the config
   or `--gps-port`), the planner shows the drone's live breadcrumb over your
   polygon while you fly. Phone-Pi WiFi drops beyond ~50-100 m; the trail
@@ -239,7 +274,18 @@ python scripts/capture_ndvi.py -o ndvi.png   # single shot + NDVI
 Capture a flight (burst of geotagged JPEGs for `process_flight.py`):
 
 ```bash
-# 40 frames, one every 2.5 s, tagging from a serial GPS
+# 40 frames, one every 2 s, tagging from a serial GPS
+#
+# INTERVAL MATTERS: the camera is not triggered by the flight controller, so
+# forward overlap is just interval x ground speed against the along-track
+# footprint. At 30 m AGL that footprint is only ~22 m, so a 5 s interval gives
+# 11% overlap at 4 m/s - nothing stitches. Required interval for 75% overlap:
+#
+#   altitude |  2 m/s  3 m/s  4 m/s
+#      30 m  |  2.8s   1.9s   1.4s
+#      60 m  |  5.6s   3.7s   2.8s
+#
+# planner.overlap_warnings(alt, speed, interval) checks this before you fly.
 python scripts/capture_flight.py --outdir flights/today --count 40 --gps-port /dev/serial0
 
 # no GPS connected? capture untagged, then tag afterwards

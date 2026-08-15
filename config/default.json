@@ -12,10 +12,11 @@
   },
   "ndvi": {
     "gamma": 0.8,
-    "leakage_k": 2.0,
+    "leakage_k": 1.428,
     "stress_threshold": 0.3,
     "block_size": 64,
-    "min_sharpness": 0.0
+    "min_sharpness": 0.0,
+    "red_gain": 2.912
   },
   "calibration": {
     "flatfield_path": "calibration/gain.npy",
@@ -57,5 +58,11 @@
     "trend_stable_delta": 0.03,
     "patch_match_radius_m": 30.0
   },
-  "exposure_presets": {}
+  "exposure_presets": {},
+  "capture": {
+    "interval_s": 2.0
+  },
+  "planner": {
+    "stitch_overlap": 0.75
+  }
 }
