@@ -322,3 +322,72 @@ def test_ndvi_chain_is_float32():
     img[:, :, 2] = 80
     out = compute_ndvi_from_image(img)
     assert out.dtype == np.float32
+
+
+# --- two-point calibration (grey-card-free) --------------------------------
+
+def _synthetic_rig(nir_ref, red_ref, k=1.43, red_gain=2.88, gain=0.30,
+                   gamma=0.8, size=64):
+    """Frame from a rig with known k and red_gain, gamma-encoded like a JPEG."""
+    import numpy as np
+    nir = gain * nir_ref
+    red = gain * (red_gain * red_ref + k * nir_ref)
+    enc = lambda x: np.clip(np.power(np.clip(x, 0, 1), gamma) * 255, 0, 255)
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+    img[:, :, 0] = enc(nir)
+    img[:, :, 1] = enc(nir)
+    img[:, :, 2] = enc(red)
+    return img
+
+
+def test_solve_two_point_recovers_both_constants():
+    """Canopy + bare soil in one frame pins k AND red_gain."""
+    import numpy as np
+    from cropvolare.ndvi import solve_two_point
+    veg = _synthetic_rig(0.75, 0.107, size=64)    # true NDVI ~0.75
+    soil = _synthetic_rig(0.30, 0.222, size=64)   # true NDVI ~0.15
+    frame = np.vstack([veg, soil])                # half canopy, half soil
+    # explicit mask: a two-valued frame makes percentile splits degenerate
+    mask = np.zeros(frame.shape[:2], dtype=bool)
+    mask[:veg.shape[0], :] = True
+    k, gain = solve_two_point(frame, mask=mask)
+    assert abs(k - 1.43) < 0.25, f"k={k}"
+    assert abs(gain - 2.88) < 0.5, f"red_gain={gain}"
+
+
+def test_solve_two_point_percentile_split_on_mixed_frame():
+    """Percentile split works on a frame with a real spread of cover."""
+    import numpy as np
+    from cropvolare.ndvi import solve_two_point
+    bands = [_synthetic_rig(n, r, size=32) for n, r in
+             [(0.75, 0.107), (0.68, 0.12), (0.50, 0.18), (0.30, 0.222)]]
+    frame = np.vstack(bands)
+    k, gain = solve_two_point(frame, veg_pct=25, soil_pct=75)
+    assert abs(k - 1.43) < 0.35, f"k={k}"
+    assert abs(gain - 2.88) < 0.7, f"red_gain={gain}"
+
+
+def test_solve_two_point_needs_both_populations():
+    """A uniform frame cannot supply two independent equations."""
+    import pytest
+    from cropvolare.ndvi import solve_two_point
+    flat = _synthetic_rig(0.75, 0.107, size=128)
+    with pytest.raises(ValueError):
+        solve_two_point(flat, veg_pct=0.01, soil_pct=99.99)
+
+
+def test_correct_leakage_does_not_saturate_vegetation():
+    """The regression that made every healthy pixel read exactly 1.0."""
+    import numpy as np
+    from cropvolare.ndvi import compute_ndvi_from_image
+    veg = _synthetic_rig(0.80, 0.05)
+    ndvi = compute_ndvi_from_image(veg, gamma=0.8, leakage_k=1.43, red_gain=2.88)
+    assert float((ndvi > 0.999).mean()) == 0.0, "healthy canopy pinned at 1.0"
+    assert 0.5 < float(ndvi.mean()) < 0.95
+
+
+def test_channel_nir_ratio_predicts_k():
+    from cropvolare.ndvi import channel_nir_ratio
+    frame = _synthetic_rig(0.5, 0.2)
+    # green and blue are both pure NIR in this synthetic rig -> ratio 1.0
+    assert abs(channel_nir_ratio(frame) - 1.0) < 0.05

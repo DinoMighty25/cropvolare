@@ -109,3 +109,32 @@ def test_litchi_csv_shape():
     assert rows[0].startswith("latitude,longitude,altitude(m)")
     assert len(rows) == 1 + len(planner.waypoints(lines))
     assert rows[1].endswith(",2,-90")  # nadir gimbal
+
+
+def test_overlap_warning_catches_the_real_flight():
+    """30 m AGL with a 5 s interval cannot stitch - the observed failure."""
+    from cropvolare.planner import overlap_warnings
+    assert overlap_warnings(30, 4.0, 5.0), "should warn at 11% overlap"
+    assert overlap_warnings(30, 6.0, 5.0)[0].startswith("GAPS")
+
+
+def test_overlap_ok_when_planned_properly():
+    from cropvolare.planner import overlap_warnings
+    assert overlap_warnings(60, 4.0, 2.5) == []
+
+
+def test_interval_for_overlap_roundtrips():
+    from cropvolare.planner import interval_for_overlap, overlap_warnings
+    iv = interval_for_overlap(60, 4.0, 0.75)
+    assert overlap_warnings(60, 4.0, iv - 0.01) == []
+
+
+def test_qgc_wpl_is_loadable_by_mission_planner():
+    from cropvolare.planner import survey_lines, to_qgc_wpl
+    poly = [(40.10, -88.20), (40.10, -88.197), (40.1018, -88.197)]
+    wpl = to_qgc_wpl(survey_lines(poly, 60, 0.7), 60, speed_mps=4.0)
+    lines = wpl.strip().split("\n")
+    assert lines[0] == "QGC WPL 110"
+    assert all(len(r.split("\t")) == 12 for r in lines[1:])
+    assert lines[1].split("\t")[3] == "16"     # home
+    assert lines[-1].split("\t")[3] == "20"    # RTL

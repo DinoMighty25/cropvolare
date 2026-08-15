@@ -175,7 +175,7 @@ def main():
                         help="folder to write JPEGs into")
     parser.add_argument("--count", type=int, default=40,
                         help="number of frames (0 = until Ctrl+C)")
-    parser.add_argument("--interval", type=float, default=2.5,
+    parser.add_argument("--interval", type=float, default=2.0,
                         help="seconds between frames")
     parser.add_argument("--warmup", type=float, default=2.0,
                         help="seconds to let the sensor settle before the first frame")
